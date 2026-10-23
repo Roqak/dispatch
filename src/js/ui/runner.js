@@ -1,7 +1,7 @@
 // The runner tab: configuration (iterations, delay, data file), a live results
 // matrix, and this workspace's recent runs.
 
-import { h, icon, toast, errText, relTime, methodClass, methodLabel } from './dom.js';
+import { h, icon, toast, errText, relTime, methodClass, methodLabel, modal } from './dom.js';
 import * as S from '../store.js';
 import { state, emit } from '../store.js';
 import { bridge } from '../bridge.js';
@@ -60,6 +60,25 @@ export function renderRunner(root, t) {
       },
     }, icon('upload'), 'Data file…');
     const clearData = h('button', { class: 'icon-btn sm', title: 'Remove the data file', onclick: () => { s0.dataText = ''; dataLabel.textContent = dataHint(); } }, icon('x'));
+    const editData = h('button', {
+      class: 'icon-btn sm', title: 'Edit the data rows inline', disabled: !s0.dataText,
+      onclick: () => {
+        const box = h('textarea', { class: 'input', style: { width: '100%', minHeight: '220px', fontFamily: 'var(--mono, monospace)', fontSize: '12px' } }, s0.dataText);
+        modal({
+          title: 'Data variables (JSON array or CSV, first row = headers)',
+          body: box,
+          actions: [
+            { label: 'Cancel', onClick: () => {} },
+            { label: 'Save', primary: true, onClick: () => {
+              const rows = R.parseDataFile(box.value);
+              if (box.value.trim() && !rows) { toast('Not a JSON array or CSV with headers + rows', { error: true }); return false; }
+              s0.dataText = box.value;
+              dataLabel.textContent = dataHint();
+            } },
+          ],
+        });
+      },
+    }, icon('edit'));
     return h('div', { class: 'runner-config' },
       h('div', { class: 'row', style: { alignItems: 'center' } },
         icon('play', 'ico'), h('div', { class: 'grow' }, h('b', null, label), h('div', { class: 'muted', style: { fontSize: '12px' } }, `${meta.length} request${meta.length === 1 ? '' : 's'}`)),
@@ -71,7 +90,7 @@ export function renderRunner(root, t) {
         h('label', null, 'Environment'), envSel,
         h('label', null, 'Run iterations'), h('div', { class: 'row' }, h('span', null, parallelChk), h('span', { class: 'hint', style: { margin: 0 } }, 'All at once (isolated copies)')),
         h('label', null, 'Failed responses'), examplesSel,
-        h('label', null, 'Data variables'), h('div', { class: 'row' }, dataBtn, clearData, dataLabel)),
+        h('label', null, 'Data variables'), h('div', { class: 'row' }, dataBtn, editData, clearData, dataLabel)),
       h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Collection and folder scripts run before each request. Iterations share variables unless parallel; data variables win over environment ones.'),
     );
   }

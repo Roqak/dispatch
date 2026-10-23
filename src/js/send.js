@@ -6,6 +6,7 @@ import { runScript } from './scripts.js';
 import { stripJsonComments } from './jsonc.js';
 import { awsSigV4Sign, hawkHeader, digestHeader, parseDigestChallenge } from './authsign.js';
 import { transportFor } from './transport.js';
+import { bridge } from './bridge.js';
 
 const RAW_TYPES = {
   json: 'application/json',
@@ -188,7 +189,16 @@ export function digestRetry(auth, outgoing, wwwAuth, CryptoJS) {
 }
 
 /**
- * Fetch an OAuth 2.0 token (client credentials or password grant).
+ * Extract the ?code= (or #code=) parameter from an OAuth redirect URL.
+ */
+export function codeFromRedirect(redirectUrl) {
+  const u = new URL(redirectUrl, 'http://redirect.invalid');
+  const code = u.searchParams.get('code') || u.hash?.replace(/^#/, '').split('&').map((p) => p.split('=').map(decodeURIComponent)).find(([k]) => k === 'code')?.[1];
+  return code || null;
+}
+
+/**
+ * Fetch an OAuth 2.0 token (client credentials, password or authorization code grant).
  * Returns the parsed token response.
  */
 export async function fetchOAuthToken(auth, resolver, send, settings) {
@@ -197,18 +207,37 @@ export async function fetchOAuthToken(auth, resolver, send, settings) {
   const grant = authParam(auth, 'grant_type') || 'client_credentials';
   const tokenUrl = p('accessTokenUrl');
   if (!tokenUrl) throw new Error('Add the Access Token URL first.');
-  const fields = [{ key: 'grant_type', value: grant === 'password_credentials' ? 'password' : grant }];
-  if (grant === 'password_credentials') {
-    fields.push({ key: 'username', value: p('username') }, { key: 'password', value: p('password') });
-  }
-  if (p('scope')) fields.push({ key: 'scope', value: p('scope') });
   const headers = [{ key: 'Accept', value: 'application/json' }];
-  const clientAuth = authParam(auth, 'client_authentication') || 'header';
-  if (clientAuth === 'body') {
-    fields.push({ key: 'client_id', value: p('clientId') }, { key: 'client_secret', value: p('clientSecret') });
+  let fields = [{ key: 'grant_type', value: grant === 'password_credentials' ? 'password' : grant }];
+
+  if (grant === 'authorization_code') {
+    // Browser sign-in: open the auth page, capture the redirect with ?code=.
+    const authUrlBase = p('authorizationUrl');
+    if (!authUrlBase) throw new Error('Add the Authorization URL first.');
+    const redirectUri = p('redirectUri');
+    if (!redirectUri) throw new Error('Add a Redirect URI first (e.g. http://localhost/oauth/callback).');
+    const stateStr = Math.random().toString(36).slice(2);
+    const authUrl = new URL(authUrlBase);
+    for (const [k, v] of [['response_type', 'code'], ['client_id', p('clientId')], ['redirect_uri', redirectUri], ['scope', p('scope')], ['state', stateStr]]) if (v) authUrl.searchParams.set(k, v);
+    const redirectUrl = await bridge.oauthFlow(authUrl.toString(), redirectUri);
+    const code = codeFromRedirect(redirectUrl);
+    if (!code) throw new Error(`The sign-in redirect had no code: ${redirectUrl}`);
+    fields = [{ key: 'grant_type', value: 'authorization_code' }, { key: 'code', value: code }, { key: 'redirect_uri', value: redirectUri }];
+    const verifier = p('codeVerifier');
+    if (verifier) fields.push({ key: 'code_verifier', value: verifier });
   } else {
-    headers.push({ key: 'Authorization', value: `Basic ${b64(`${p('clientId')}:${p('clientSecret')}`)}` });
+    if (grant === 'password_credentials') {
+      fields.push({ key: 'username', value: p('username') }, { key: 'password', value: p('password') });
+    }
+    if (p('scope')) fields.push({ key: 'scope', value: p('scope') });
+    const clientAuth = authParam(auth, 'client_authentication') || 'header';
+    if (clientAuth === 'body') {
+      fields.push({ key: 'client_id', value: p('clientId') }, { key: 'client_secret', value: p('clientSecret') });
+    } else {
+      headers.push({ key: 'Authorization', value: `Basic ${b64(`${p('clientId')}:${p('clientSecret')}`)}` });
+    }
   }
+
   const res = await send({ method: 'POST', url: tokenUrl, headers, body: { mode: 'urlencoded', fields }, settings });
   let json;
   try { json = JSON.parse(res.bodyText || ''); } catch { json = null; }

@@ -6,6 +6,7 @@ import { bridge } from './bridge.js';
 import { clone, uuid, findItem, findParentList, newRequestItem, newFolder, isFolder, itemId, duplicateItem, urlObject, effectiveAuth } from './model.js';
 import { Scope, Resolver } from './vars.js';
 import { execute, buildOutgoing } from './send.js';
+import * as WS from './ws.js';
 import { toast, confirmDialog, errText } from './ui/dom.js';
 
 export const libs = () => ({ chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._ });
@@ -84,6 +85,30 @@ export function openRunner(entry, folderId = null) {
   if (existing) return focusTab(existing.id);
   addTab({ kind: 'runner', ref: { col: entry.uid, item: folderId }, draft: { name: 'Runner' } });
 }
+
+// ---------- WebSocket connections ----------
+
+export async function wsToggle(t) {
+  const c = t.wsConn || (t.wsConn = { status: 'disconnected', log: [] });
+  if (c.id) {
+    try { await WS.closeConn(t); } catch (e) { toast(errText(e), { error: true }); }
+    return;
+  }
+  const raw = t.draft.request.url.raw || '';
+  const { collection, parents } = contextFor(t);
+  const url = resolverFor(t).replace(raw);
+  const resolved = /^(ws|wss):/i.test(url) ? url : /^https:/i.test(url) ? url.replace(/^https:/i, 'wss:') : url.replace(/^http:/i, 'ws:');
+  const auth = effectiveAuth(t.draft.request, parents, collection).auth;
+  const outgoing = buildOutgoing(t.draft.request, auth, resolverFor(t), state.settings);
+  try {
+    await WS.connect(t, { outgoing, resolverReplaced: outgoing.url });
+  } catch (e) {
+    if (!String(e).startsWith('Already')) toast(errText(e), { error: true });
+  }
+  emit('tabs', 'main');
+}
+
+export const emitWs = () => emit('ws');
 
 export async function closeTab(id, { force = false } = {}) {
   const t = state.tabs.find((x) => x.id === id);

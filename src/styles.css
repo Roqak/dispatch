@@ -470,3 +470,21 @@ progress::-webkit-progress-value { background: var(--accent); }
 .test-fail { color: var(--err); font-size: 12px; display: flex; gap: 6px; align-items: baseline; }
 .runner-history { max-width: 720px; color: var(--text-2); }
 .runner h4 { font-weight: 600; }
+/* ---------- response diff ---------- */
+.diff-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.diff-content { overflow: auto; padding: 0 12px 12px; }
+.diff-scroll { max-height: 100%; overflow: auto; }
+.diff-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.diff-table td { padding: 3px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.diff-table tr.diff-add td { color: var(--ok); background: var(--var-ok-bg); }
+.diff-table tr.diff-del td { color: var(--err); background: var(--var-bad-bg); }
+.diff-table td:first-child { font-family: var(--mono, monospace); color: var(--text-3); white-space: nowrap; }
+.diff-summary { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+.ws-log { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; }
+.ws-frame { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; }
+.ws-frame.in { background: var(--var-ok-bg); }
+.ws-frame.out { background: var(--panel-2); }
+.ws-frame .dir { font-size: 10.5px; font-weight: 700; color: var(--text-3); flex-shrink: 0; }
+.ws-frame pre { margin: 0; flex: 1; white-space: pre-wrap; word-break: break-word; font-size: 12px; max-height: 140px; overflow: auto; }
+.ws-composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); align-items: flex-end; }
+.ws-compose { flex: 1; resize: vertical; min-height: 40px; }

@@ -265,7 +265,7 @@ pub async fn send(state: &HttpState, req: OutgoingRequest) -> Result<IncomingRes
 
 /// Splits a PEM file into its certificate blocks and its private-key block.
 /// Accepts PKCS#8 ("PRIVATE KEY") and legacy PKCS#1 ("RSA PRIVATE KEY") keys.
-fn split_pem(text: &str) -> Option<(String, String)> {
+pub fn split_pem(text: &str) -> Option<(String, String)> {
     let mut certs = Vec::new();
     let mut key = None;
     let mut block: Option<(String, String)> = None; // (label, body)

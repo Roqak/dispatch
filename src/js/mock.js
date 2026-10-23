@@ -133,6 +133,7 @@ export const mockBridge = {
   async secretGet(key) { return read(key) ?? ''; },
   async secretPut(key, value) { if (value === '') { ls.removeItem(`dispatch:${key}`); return; } write(key, value); },
   async trimMemory() {},
+  async oauthFlow() { throw 'Only in the desktop app.'; },
   async read(name) { return read(name); },
   async write(name, value) { write(name, value); },
   async openTextFile() { return null; },

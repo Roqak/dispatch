@@ -57,6 +57,10 @@ export const saveHistory = () => persist('history', () => state.history, 800);
 function serialTab(t) {
   // Responses can be large; keep them out of the saved tab list.
   const { response, running, ...rest } = t;
+  if (rest.wsConn) {
+    // Connections die with the process; keep the frame log for review only.
+    rest.wsConn = { status: 'disconnected', log: rest.wsConn.log || [] };
+  }
   return rest;
 }
 

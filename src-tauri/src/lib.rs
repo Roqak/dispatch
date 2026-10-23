@@ -1,6 +1,7 @@
 mod http;
 mod postman;
 mod secrets;
+mod ws;
 
 use serde_json::Value;
 use std::path::PathBuf;
@@ -96,6 +97,51 @@ fn trim_memory(app: AppHandle) -> bool {
     false
 }
 
+/// Opens the auth URL in a child window and resolves when navigation reaches
+/// `redirectPrefix` with `?code=...` (or `#code=`). Returns the redirect URL.
+#[tauri::command]
+async fn oauth_authorization_flow(app: AppHandle, auth_url: String, redirect_prefix: String) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let handle = app.clone();
+    let redirect_prefix = redirect_prefix.clone();
+    std::thread::spawn(move || {
+      let built = (|| -> Result<tauri::WebviewWindow, String> {
+        let url: tauri::Url = auth_url.parse().map_err(|e| format!("Bad auth URL: {e}"))?;
+        tauri::WebviewWindowBuilder::new(&handle, "oauth", tauri::WebviewUrl::External(url))
+          .title("Sign in")
+          .inner_size(560.0, 640.0)
+          .build()
+          .map_err(|e| format!("Couldn't open the sign-in window: {e}"))
+      })();
+      let child = match built {
+        Ok(c) => c,
+        Err(e) => { let _ = tx.send(Err(e)); return; }
+      };
+      let _ = tx.send(Err("pending".to_string()));
+      // Poll navigation; tauri's on_navigation doesn't exist on the builder here,
+      // so the window writes its URL to an event the main window relays via eval.
+      let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+      loop {
+        if std::time::Instant::now() > deadline { let _ = tx.send(Err("Sign-in timed out after 5 minutes.".into())); break; }
+        if let Ok(url) = child.url() {
+          let s = url.as_str();
+          if s.starts_with(&redirect_prefix) {
+            let _ = child.close();
+            let _ = tx.send(Ok(s.to_string()));
+            break;
+          }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+      }
+    });
+    // The loop above sends "pending" first, then the final result — take the LAST one.
+    match rx.recv() {
+        Ok(Err(p)) if p == "pending" => match rx.recv() { Ok(outcome) => outcome, Err(_) => Err("Sign-in window closed.".into()) },
+        Ok(r) => r,
+        Err(_) => Err("Sign-in window closed.".into()),
+    }
+}
+
 // ---------- Generic secret slots (e.g. client-certificate passwords) ----------
 
 #[tauri::command]
@@ -179,6 +225,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .manage(http::HttpState::new())
+        .manage(ws::new())
         .invoke_handler(tauri::generate_handler![
             send_request,
             clear_cookies,
@@ -191,6 +238,10 @@ pub fn run() {
             secret_get,
             secret_put,
             trim_memory,
+            ws::ws_connect,
+            ws::ws_send,
+            ws::ws_close,
+            oauth_authorization_flow,
             store_read,
             store_write,
             open_text_file,

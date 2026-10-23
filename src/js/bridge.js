@@ -30,6 +30,7 @@ export const bridge = isDesktop
       secretGet: (key) => invoke('secret_get', { key }),
       secretPut: (key, value) => invoke('secret_put', { key, value }),
       trimMemory: () => invoke('trim_memory'),
+      oauthFlow: (authUrl, redirectPrefix) => invoke('oauth_authorization_flow', { authUrl, redirectPrefix }),
       read: (name) => invoke('store_read', { name }),
       write: (name, value) => invoke('store_write', { name, value }),
       openTextFile: () => invoke('open_text_file'),

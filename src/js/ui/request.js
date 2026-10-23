@@ -1,6 +1,7 @@
 import { h, icon, showMenu, toast, errText, fmtBytes, fmtMs, methodClass } from './dom.js';
 import { varInput, kvSection, codeArea, highlightJson, subtabs } from './components.js';
 import { diffResponses } from '../jsondiff.js';
+import * as WS from '../ws.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
 import { state } from '../store.js';
@@ -46,7 +47,7 @@ export function renderRequestEditor(root, t) {
       dirty();
       if (t.sub === 'params') renderPane();
     },
-    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); C.run(t); } },
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); WS.isWs(req.url.raw || '') ? C.wsToggle(t) : C.run(t); } },
   });
   urlField.classList.add('url-wrap');
   urlField.style.height = '100%';
@@ -62,7 +63,9 @@ export function renderRequestEditor(root, t) {
       C.emitAll();
     } catch (err) { toast(errText(err), { error: true }); }
   });
-  const sendBtn = h('button', { class: 'btn primary send-btn', disabled: t.running, onclick: () => C.run(t) }, t.running ? 'Sending…' : 'Send');
+  const wsMode = WS.isWs(req.url.raw || '');
+  const wsBtnLabel = wsMode ? (t.wsConn?.status === 'connected' ? 'Disconnect' : t.wsConn?.status === 'connecting' ? 'Cancel' : 'Connect') : t.running ? 'Sending…' : 'Send';
+  const sendBtn = h('button', { class: 'btn primary send-btn', disabled: t.running && !wsMode, onclick: () => (wsMode ? C.wsToggle(t) : C.run(t)) }, wsBtnLabel);
   const reqline = h('div', { class: 'reqline' }, h('div', { class: 'reqline-box' }, methodSel, urlField), sendBtn);
 
   // sub tabs
@@ -214,7 +217,13 @@ export function authEditor({ target, kind, parents = [], collection, resolver, o
       } }, 'Get new access token');
       grid.append(h('span'), h('div', null, btn));
     } else {
-      grid.append(h('p', { class: 'hint full' }, 'Dispatch can\'t open a browser sign-in for the authorization code flow yet. Get a token elsewhere (for example in Postman) and paste it into "Current token".'));
+      grid.append(
+        ...field('Authorization URL', 'authorizationUrl', { placeholder: 'https://authorize.example.com/oauth/authorize' }),
+        ...field('Redirect URI', 'redirectUri', { placeholder: 'e.g. http://localhost/oauth/callback' }),
+        ...field('Code verifier (PKCE)', 'codeVerifier', { secret: true, placeholder: 'Optional' }),
+        h('span'), h('div', null, btn),
+        h('p', { class: 'hint full', style: { margin: '4px 0 0' } }, 'Opens a sign-in window; Dispatch captures the redirect with the code automatically and exchanges the code for the token.'),
+      );
     }
   } else if (current === 'digest') {
     grid.append(
@@ -375,6 +384,7 @@ function requestSettings(item, dirty) {
 // ---------- response ----------
 
 export function renderResponse(root, t) {
+  if (WS.isWs(t.draft?.request?.url?.raw || '') || t.wsConn) return renderWsResponse(root, t);
   const r = t.response;
   if (t.running) {
     root.replaceChildren(h('div', { class: 'loading-bar' }), h('div', { class: 'resp-empty' }, h('div', null, 'Sending request…')));
@@ -442,6 +452,39 @@ export function renderResponse(root, t) {
   }
   root.replaceChildren(head, body);
 }
+
+function renderWsResponse(root, t) {
+  const c = t.wsConn || (t.wsConn = { status: 'disconnected', log: [] });
+  const statusLabel = c.status === 'connected' ? ['chip ok', 'ws connected'] : c.status === 'connecting' ? ['chip warn', 'connecting…'] : c.status === 'closed' ? ['chip', `closed${c.closeCode != null ? ' ' + c.closeCode : ''}`] : c.status === 'error' ? ['chip bad', 'error'] : ['chip', 'not connected'];
+
+  const head = h('div', { class: 'resp-head' },
+    h('div', { class: 'resp-tools' },
+      h('span', { class: statusLabel[0] }, statusLabel[1]),
+      h('button', { class: 'icon-btn', title: 'Clear frames', onclick: () => { c.log = []; emit2('ws'); } }, icon('trash'))));
+  const body = h('div', { class: 'resp-body' });
+  const log = h('div', { class: 'ws-log' });
+  const rows = (c.log || []).map((f) => h('div', { class: ['ws-frame', f.dir] },
+    h('span', { class: 'dir' }, f.dir === 'in' ? '← in' : '→ out'),
+    h('pre', null, f.text),
+    h('span', { class: 'size muted' }, fmtBytes(f.size))));
+  log.append(...rows.length ? rows : [h('div', { class: 'resp-empty' }, 'Frames show up here once connected.')]);
+  body.append(log);
+
+  const composer = h('textarea', { class: 'input ws-compose', placeholder: 'Message text to send…', rows: 2, onkeydown: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
+  const send = async () => {
+    const text = composer.value;
+    if (!text.trim()) return;
+    try { await WS.sendFrame(t, text); composer.value = ''; } catch (err) { toast(errText(err), { error: true }); }
+  };
+  const closeBtn = h('button', { class: 'btn sm', disabled: !c.id, onclick: async () => { try { await WS.closeConn(t); } catch (err) { toast(errText(err), { error: true }); } } }, 'Close');
+  body.append(h('div', { class: 'ws-composer' }, composer,
+    h('button', { class: 'btn primary', disabled: c.status !== 'connected', onclick: send }, icon('send'), 'Send frame'), closeBtn));
+  root.replaceChildren(head, body);
+}
+
+const emit2 = (evt) => {
+  import('../store.js').then((S) => S.emit(evt));
+};
 
 /**
  * Response diff: compare this response against an example, a history entry,
