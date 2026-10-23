@@ -7,6 +7,7 @@ import { bridge } from '../bridge.js';
 import { METHODS, urlObject, setRawUrl, rawWithQuery, getScript, setScript, AUTH_TYPES, authParam, setAuthParam, effectiveAuth, parseUrl, clone } from '../model.js';
 import { fetchOAuthToken } from '../send.js';
 import { parseCurl } from '../curl.js';
+import { formatJsonc, jsonProblem } from '../jsonc.js';
 
 // ---------- request editor ----------
 
@@ -25,6 +26,7 @@ export function renderRequestEditor(root, t) {
     path ? h('span', { class: 'path', title: path }, `${path} /`) : h('span', { class: 'badge local' }, 'Not saved'),
     nameInput,
     h('span', { class: 'grow' }),
+    h('button', { class: 'icon-btn', title: state.settings.layout === 'side' ? 'Show the response below (⌥⌘V)' : 'Show the response beside the request (⌥⌘V)', onclick: () => S.toggleLayout() }, icon(state.settings.layout === 'side' ? 'rows' : 'columns')),
     h('button', { class: 'btn sm', title: 'Save (⌘S)', onclick: () => C.saveTab(t) }, icon('check'), t.ref?.col ? 'Save' : 'Save to collection'),
     h('button', { class: 'icon-btn', title: 'More', onclick: (e) => showMenu(e, [
       { label: 'Copy as cURL', icon: 'terminal', onClick: async () => { await navigator.clipboard.writeText(C.curlFor(t)); toast('Copied cURL command'); } },
@@ -114,30 +116,14 @@ export function renderRequestEditor(root, t) {
 }
 
 /**
- * Pretty-print JSON that may contain {{variables}}. Variables inside strings are
- * already valid JSON; bare ones (e.g. "amount": {{amount}}) are swapped for
- * placeholders while formatting and put back afterwards.
+ * Pretty-print a JSON body that may contain {{variables}} (inside strings or
+ * bare, e.g. "amount": {{amount}}) and // or /* *\/ comments, keeping both.
+ * Throws when the JSON itself isn't valid.
  */
 export function beautifyJson(text) {
-  const holders = [];
-  let out = '';
-  let inStr = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inStr) {
-      out += c;
-      if (c === '\\') { out += text[++i] ?? ''; continue; }
-      if (c === '"') inStr = false;
-      continue;
-    }
-    if (c === '"') { inStr = true; out += c; continue; }
-    if (c === '{' && text[i + 1] === '{') {
-      const end = text.indexOf('}}', i + 2);
-      if (end > 0) { holders.push(text.slice(i, end + 2)); out += `"__DISPATCH_VAR_${holders.length - 1}__"`; i = end + 1; continue; }
-    }
-    out += c;
-  }
-  return JSON.stringify(JSON.parse(out), null, 2).replace(/"__DISPATCH_VAR_(\d+)__"/g, (m, n) => holders[Number(n)]);
+  const problem = jsonProblem(text);
+  if (problem) throw new Error(problem);
+  return formatJsonc(text);
 }
 
 function isEmptyBody(b) {

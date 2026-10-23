@@ -3,6 +3,7 @@
 import { clone, urlObject, getScript, effectiveAuth, authParam } from './model.js';
 import { Resolver } from './vars.js';
 import { runScript } from './scripts.js';
+import { stripJsonComments } from './jsonc.js';
 
 const RAW_TYPES = {
   json: 'application/json',
@@ -47,8 +48,9 @@ export function buildOutgoing(req, auth, resolver, settings) {
   const bodyDisabled = b?.disabled;
   if (b && !bodyDisabled) {
     if (b.mode === 'raw' && b.raw != null && b.raw !== '') {
-      body = { mode: 'raw', content: R(b.raw) };
       const lang = b.options?.raw?.language || 'text';
+      // Postman lets JSON bodies carry comments and strips them before sending.
+      body = { mode: 'raw', content: R(lang === 'json' ? stripJsonComments(b.raw) : b.raw) };
       if (!hasHeader('content-type')) headers.push({ key: 'Content-Type', value: RAW_TYPES[lang] || 'text/plain' });
     } else if (b.mode === 'urlencoded') {
       body = { mode: 'urlencoded', fields: (b.urlencoded || []).filter((f) => !f.disabled && f.key).map((f) => ({ key: R(f.key), value: R(f.value) })) };

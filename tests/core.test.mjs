@@ -6,6 +6,7 @@ import { parseUrl, setRawUrl, rawWithQuery, normaliseImport, forUpload, findItem
 import { Scope, Resolver, DYNAMIC, localOnlyKeys, persistCurrent, resetCurrent } from '../src/js/vars.js';
 import { runScript } from '../src/js/scripts.js';
 import { buildOutgoing, execute } from '../src/js/send.js';
+import { stripJsonComments, formatJsonc, jsonProblem } from '../src/js/jsonc.js';
 
 const require = createRequire(import.meta.url);
 const libs = {
@@ -321,4 +322,36 @@ test('resolver lists names by winning scope, masks secrets, and knows Postman dy
   assert.ok(Object.keys(DYNAMIC).length > 90);
   assert.match(r.replace('{{$randomIP}}'), /^\d+\.\d+\.\d+\.\d+$/);
   assert.match(r.replace('{{$randomHexColor}}'), /^#[0-9a-f]{6}$/);
+});
+
+test('JSON bodies: comments are stripped before sending, but never inside strings', () => {
+  const raw = '{\n  "model": "kimi", // pick a model\n  /* block */ "url": "https://x.io//a", "q": "say \\"//hi\\"",\n  "n": {{n}}\n}';
+  const r = new Resolver(scopes([{ key: 'n', value: '2' }]));
+  const req = (language) => ({ method: 'POST', url: parseUrl('http://api.test'), header: [], body: { mode: 'raw', raw, options: { raw: { language } } } });
+  const sent = buildOutgoing(req('json'), null, r, {}).body.content;
+  assert.deepEqual(JSON.parse(sent), { model: 'kimi', url: 'https://x.io//a', q: 'say "//hi"', n: 2 });
+  assert.equal(buildOutgoing(req('text'), null, r, {}).body.content, raw.replace('{{n}}', '2'), 'only JSON bodies are touched');
+  assert.equal(stripJsonComments('// only a comment'), '');
+});
+
+test('Beautify keeps comments and {{variables}}, and points at real errors', () => {
+  const src = '{"model":"kimi", // pick a model\n"messages":[{"role":"user","content":"hi"} ],"n":{{n}},"e":{},"l":[]}';
+  const out = formatJsonc(src);
+  assert.equal(out, [
+    '{',
+    '  "model": "kimi", // pick a model',
+    '  "messages": [',
+    '    {',
+    '      "role": "user",',
+    '      "content": "hi"',
+    '    }',
+    '  ],',
+    '  "n": {{n}},',
+    '  "e": {},',
+    '  "l": []',
+    '}',
+  ].join('\n'));
+  assert.equal(formatJsonc(out), out, 'formatting twice changes nothing');
+  assert.equal(jsonProblem(src), null);
+  assert.match(jsonProblem('{\n  "a": 1, // fine\n  "b": oops\n}'), /oops|line 3/);
 });

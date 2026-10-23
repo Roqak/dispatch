@@ -56,18 +56,22 @@ function renderMain() {
   const t = C.activeTab();
   editorEl = null;
   responseEl = null;
+  workspaceEl.classList.remove('side');
   if (!state.settings.onboarded) return renderWelcome(workspaceEl);
   if (!t) return renderEmpty(workspaceEl);
   if (t.kind === 'request') {
     editorEl = h('section', { id: 'editor' });
     responseEl = h('section', { id: 'response' });
-    const ratio = state.settings.responseRatio;
-    editorEl.style.flex = `0 0 ${Math.round((1 - ratio) * 1000) / 10}%`;
-    const handle = h('div', { class: 'resizer-y' });
-    dragResize(handle, () => ({ total: workspaceEl.getBoundingClientRect().height, start: editorEl.getBoundingClientRect().height }), (dx, dy, ctx) => {
-      const hgt = Math.max(150, Math.min(ctx.total - 90, ctx.start + dy));
-      state.settings.responseRatio = 1 - hgt / ctx.total;
-      editorEl.style.flex = `0 0 ${hgt}px`;
+    const side = state.settings.layout === 'side';
+    workspaceEl.classList.toggle('side', side);
+    renderMainSizes();
+    const handle = h('div', { class: side ? 'resizer-x' : 'resizer-y' });
+    const dim = side ? 'width' : 'height';
+    dragResize(handle, () => ({ total: workspaceEl.getBoundingClientRect()[dim], start: editorEl.getBoundingClientRect()[dim] }), (dx, dy, ctx) => {
+      const size = Math.max(side ? 320 : 150, Math.min(ctx.total - (side ? 280 : 90), ctx.start + (side ? dx : dy)));
+      if (side) state.settings.sideRatio = 1 - size / ctx.total;
+      else state.settings.responseRatio = 1 - size / ctx.total;
+      editorEl.style.flex = `0 0 ${size}px`;
     }, () => { S.saveSettings(); renderMainSizes(); });
     workspaceEl.replaceChildren(editorEl, handle, responseEl);
     renderRequestEditor(editorEl, t);
@@ -84,7 +88,8 @@ function renderMain() {
 }
 
 function renderMainSizes() {
-  if (editorEl) editorEl.style.flex = `0 0 ${Math.round((1 - state.settings.responseRatio) * 1000) / 10}%`;
+  const ratio = state.settings.layout === 'side' ? state.settings.sideRatio ?? 0.5 : state.settings.responseRatio;
+  if (editorEl) editorEl.style.flex = `0 0 ${Math.round((1 - ratio) * 1000) / 10}%`;
 }
 
 function updateRunState() {
@@ -145,6 +150,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'w') { e.preventDefault(); if (t) C.closeTab(t.id); }
   else if (k === ',') { e.preventDefault(); openSettings(); }
   else if (k === 'l' && t?.kind === 'request') { e.preventDefault(); editorEl?.focusUrl?.(); }
+  else if (e.code === 'KeyV' && e.altKey) { e.preventDefault(); S.toggleLayout(); }
   else if ((e.key === ']' || e.key === '}') && e.shiftKey || (e.key === 'Tab' && e.ctrlKey && !e.shiftKey)) { e.preventDefault(); cycleTab(1); }
   else if ((e.key === '[' || e.key === '{') && e.shiftKey || (e.key === 'Tab' && e.ctrlKey && e.shiftKey)) { e.preventDefault(); cycleTab(-1); }
 });

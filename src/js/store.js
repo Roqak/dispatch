@@ -18,6 +18,8 @@ export const state = {
     envByWs: {},
     sidebarWidth: 290,
     responseRatio: 0.48,
+    layout: 'stacked', // or 'side': request and response side by side
+    sideRatio: 0.5,
     onboarded: false,
     region: 'us',
     wsByProfile: {},
@@ -618,6 +620,13 @@ function freshIds(collection) {
 }
 
 /** Called when scripts change current values; these stay local, like Postman. */
+/** Switches between the response under the request and beside it (⌥⌘V, as in Postman). */
+export function toggleLayout() {
+  state.settings.layout = state.settings.layout === 'side' ? 'stacked' : 'side';
+  saveSettings();
+  emit('main');
+}
+
 export function overlaysChanged() {
   saveWorkspace();
   emit('env-values');
