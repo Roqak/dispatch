@@ -70,65 +70,118 @@ const runnerScopes = ({ ws, env, collection, row, iteration }) => ({
 /**
  * Run every request of a collection or folder. `iterations` applies when
  * there are no data rows; with rows, one iteration runs per row.
- * opts: { entry, folderId, iterations, rows, delayMs, onProgress, isStopped, env, ws }
- * Cancellation: throws { cancelled: true } when isStopped() flips.
+ * opts: { entry, folderId, iterations, rows, delayMs, onProgress, isStopped,
+ *         env, send, parallel, saveExamples ('none' | 'failed') }
+ * Cancellation: throws nothing — returns a cancelled summary.
  */
-export async function runBatch({ entry, folderId = null, iterations = 1, rows = [], delayMs = 0, onProgress, isStopped, env, send }) {
+export async function runBatch({ entry, folderId = null, iterations = 1, rows = [], delayMs = 0, onProgress, isStopped, env, send, parallel = false, saveExamples = 'none' }) {
   await S.ensureCollection(entry);
   const collection = entry.data;
-  const ws = state.ws;
-  env = env ?? S.activeEnvEntry();
+  const ws = state.ws || { globals: { values: [], overlay: {}, dirty: false }, colOverlays: {} };
+  env = env === null ? null : (env ?? S.activeEnvEntry());
   if (env && !env.data) { try { await S.pullEnvironment(env); } catch { /* fall back to values */ } if (env && !env.data) env = null; }
   const reqs = flattenRequests(collection, folderId);
   if (!reqs.length) throw new Error('Nothing to run: this collection or folder has no requests.');
 
   const total = Math.max(1, rows.length || iterations);
   const allResults = [];
+  const examplePlan = [];
   const started = Date.now();
   let stopped = false;
   let completedIterations = 0;
 
-  for (let i = 0; i < total; i++) {
+  const runOne = async (i, j, item, parents) => {
     const row = rows.length ? rows[i] : null;
-    const scopeSet = runnerScopes({ ws, env, collection, row, iteration: i + 1 });
-    const iterationResults = [];
-    for (const { item, parents } of reqs) {
-      if (isStopped?.()) { stopped = true; break; }
-      let result;
-      try {
-        result = await execute({
-          item, parents, collection,
-          scopes: scopeSet,
-          settings: state.settings,
-          send: send ?? ((r) => bridge.send(r)),
-          libs: globalThis.chai ? { chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._ } : undefined,
-        });
-      } catch (e) {
-        result = { error: String(e?.message || e), tests: [], logs: [], notes: [], scriptErrors: [] };
-      }
-      S.addHistory({
-        name: item.name, method: item.request?.method || 'GET',
-        url: result.outgoing?.url || '', status: result.response?.status ?? null,
-        timeMs: result.response?.timeMs ?? null, error: result.error || null,
+    // Parallel iterations share nothing: overlays are cloned so scripts that
+    // write current values never race.
+    const cloneOverlays = parallel && i > 0;
+    const scopeSet = runnerScopes({
+      ws: cloneOverlays ? ({ ...ws, globals: { ...ws.globals, overlay: { ...(ws.globals.overlay || {}) } }, colOverlays: { ...(ws.colOverlays || {}) } }) : ws,
+      env: cloneOverlays && env ? { ...env, overlay: { ...(env.overlay || {}) } } : env,
+      collection, row, iteration: i + 1,
+    });
+    let result;
+    try {
+      result = await execute({
+        item, parents, collection,
+        scopes: scopeSet,
+        settings: state.settings,
+        send: send ?? ((r) => bridge.send(r)),
+        libs: globalThis.chai ? { chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._ } : undefined,
       });
-      const res = {
-        id: itemId(item), iteration: i + 1,
-        name: item.name, method: item.request?.method || 'GET',
-        status: result.response?.status ?? null,
-        timeMs: result.response?.timeMs ?? null,
-        testsTotal: result.tests?.length ?? 0,
-        testsPassed: (result.tests || []).filter((x) => x.passed).length,
-        failures: (result.tests || []).filter((x) => x.passed === false).map((x) => x.name),
-        error: result.error ?? null,
-        notes: result.notes ?? [],
-      };
-      iterationResults.push(res);
-      onProgress?.(res);
+    } catch (e) {
+      result = { error: String(e?.message || e), tests: [], logs: [], notes: [], scriptErrors: [] };
     }
-    if (stopped) break;
-    allResults.push(...iterationResults);
-    completedIterations = i + 1;
-    if (delayMs && i < total - 1) await new Promise((r) => setTimeout(r, delayMs));
+    S.addHistory({
+      name: item.name, method: item.request?.method || 'GET',
+      url: result.outgoing?.url || '', status: result.response?.status ?? null,
+      timeMs: result.response?.timeMs ?? null, error: result.error || null,
+    });
+    const res = {
+      id: itemId(item), iteration: i + 1,
+      name: item.name, method: item.request?.method || 'GET',
+      status: result.response?.status ?? null,
+      timeMs: result.response?.timeMs ?? null,
+      testsTotal: result.tests?.length ?? 0,
+      testsPassed: (result.tests || []).filter((x) => x.passed).length,
+      failures: (result.tests || []).filter((x) => x.passed === false).map((x) => x.name),
+      error: result.error ?? null,
+      notes: result.notes ?? [],
+    };
+    if (saveExamples === 'failed' && result.response && (res.status == null || res.status >= 400 || (result.tests || []).some((x) => x.passed === false))) {
+      examplePlan.push({ item, response: result.response, result: res });
+      res.exampleSaved = false; // set true once applied
+    }
+    onProgress?.(res);
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
+    return res;
+  };
+
+  if (parallel) {
+    const tasks = [];
+    for (let i = 0; i < total; i++) {
+      for (let j = 0; j < reqs.length; j++) {
+        if (isStopped?.()) { stopped = true; break; }
+        tasks.push(runOne(i, j, reqs[j].item, reqs[j].parents).then((res) => { allResults.push(res); }));
+      }
+      if (stopped) break;
+    }
+    await Promise.all(tasks);
+    completedIterations = stopped ? allResults.filter((r, idx, a2) => a2.findIndex((x) => x.iteration === r.iteration) === idx).length : total;
+    allResults.sort((a2, b2) => a2.iteration - b2.iteration);
+  } else {
+    for (let i = 0; i < total; i++) {
+      const row = rows.length ? rows[i] : null;
+      void row;
+      const iterationResults = [];
+      for (let j = 0; j < reqs.length; j++) {
+        if (isStopped?.()) { stopped = true; break; }
+        const res = await runOne(i, j, reqs[j].item, reqs[j].parents);
+        iterationResults.push(res);
+      }
+      if (stopped) break;
+      allResults.push(...iterationResults);
+      completedIterations = i + 1;
+    }
+  }
+
+  // Apply saved examples into the collection, then push.
+  if (saveExamples === 'failed' && examplePlan.length) {
+    for (const { item, response, result } of examplePlan) {
+      item.response = item.response || [];
+      item.response.push({
+        name: `Runner ${result.iteration}: ${response.status} ${response.statusText || ''}`.trim(),
+        originalRequest: clone(item.request),
+        status: response.statusText,
+        code: response.status,
+        _postman_previewlanguage: (response.contentType || '').includes('json') ? 'json' : 'text',
+        header: (response.headers || []).map((x) => ({ key: x.key, value: x.value })),
+        cookie: [],
+        body: (response.bodyText || '').slice(0, 100_000),
+      });
+      result.exampleSaved = true;
+    }
+    await S.collectionChanged(entry, { push: true }).catch(() => { entry.dirty = true; S.saveWorkspace(); });
   }
 
   const passed = allResults.filter((r) => !r.error && r.status && r.status < 400 && r.testsPassed === r.testsTotal).length;

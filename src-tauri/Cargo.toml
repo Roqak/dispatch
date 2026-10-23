@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["fs", "time"] }
 base64 = "0.22"
 mime_guess = "2"
 libc = "0.2"
+tauri-plugin-updater = "2.0.0-rc.4"
 
 # The Postman API key lives in the macOS Keychain.
 [target.'cfg(target_os = "macos")'.dependencies]

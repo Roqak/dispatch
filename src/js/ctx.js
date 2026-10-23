@@ -199,6 +199,8 @@ export async function run(t) {
     timeMs: result.response?.timeMs ?? null,
     error: result.error || null,
     request: clone(t.draft.request),
+    // Retained (capped) so response diffing can use it as a comparison source.
+    bodyText: (result.response?.body_text ?? '').length <= 100_000 ? result.response?.body_text : undefined,
     ref: t.ref ? { ...t.ref } : null,
   });
   emit('response', 'tabs', 'env-values');

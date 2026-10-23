@@ -3,6 +3,7 @@ import { renderSidebar } from './ui/sidebar.js';
 import { renderRequestEditor, renderResponse } from './ui/request.js';
 import { renderContainer, renderEnvTab, renderWelcome, renderEmpty, openSettings, applyTheme, envQuickLook } from './ui/panels.js';
 import { renderRunner } from './ui/runner.js';
+import { scheduleUpdateCheck } from './updater.js';
 import * as S from './store.js';
 import { state, on } from './store.js';
 import * as C from './ctx.js';
@@ -184,4 +185,4 @@ S.init().catch((e) => {
   console.error(e);
   toast(`Dispatch couldn't load its data: ${errText(e)}`, { error: true, timeout: 15000 });
   renderAll();
-});
+}).finally(() => scheduleUpdateCheck());

@@ -37,6 +37,15 @@ export function renderRunner(root, t) {
     const label = `${entry.name}${folder ? ` / ${folder}` : ''}`;
     const iterInput = h('input', { class: 'input', type: 'number', min: 1, max: 10000, value: s0.iterations, onchange: () => { s0.iterations = Math.max(1, Math.min(10000, Number(iterInput.value) || 1)); } });
     const delayInput = h('input', { class: 'input', type: 'number', min: 0, max: 60000, value: s0.delayMs, onchange: () => { s0.delayMs = Math.max(0, Math.min(60000, Number(delayInput.value) || 0)); } });
+    const activeEnvUid = S.activeEnvEntry()?.uid || '';
+    if (!s0.envInit) { s0.envInit = true; s0.env = s0.env ?? activeEnvUid; }
+    const envSel = h('select', { class: 'select', title: 'Environment for this run', onchange: () => { s0.env = envSel.value || null; } },
+      h('option', { value: '', selected: !s0.env }, 'None'),
+      (S.state.ws?.environments || []).map((e) => h('option', { value: e.uid, selected: e.uid === s0.env }, e.name)));
+    const parallelChk = h('input', { type: 'checkbox', checked: !!s0.parallel, onchange: () => { s0.parallel = parallelChk.checked; } });
+    const examplesSel = h('select', { class: 'select', title: 'Keep responses as examples', onchange: () => { s0.saveExamples = examplesSel.value; } },
+      h('option', { value: 'none', selected: (s0.saveExamples || 'none') === 'none' }, "Don't save"),
+      h('option', { value: 'failed', selected: s0.saveExamples === 'failed' }, 'Save responses of failed requests'));
     const dataLabel = h('span', { class: 'muted', style: { fontSize: '12px' } }, dataHint());
     const dataBtn = h('button', {
       class: 'btn sm', title: 'CSV (first row = headers) or a JSON array of objects: every {{variable}} resolves from the row; rows.length iterations run.',
@@ -59,8 +68,11 @@ export function renderRunner(root, t) {
       h('div', { class: 'form-grid', style: { marginTop: '10px' } },
         h('label', null, 'Iterations'), iterInput,
         h('label', null, 'Delay between iterations (ms)'), delayInput,
+        h('label', null, 'Environment'), envSel,
+        h('label', null, 'Run iterations'), h('div', { class: 'row' }, h('span', null, parallelChk), h('span', { class: 'hint', style: { margin: 0 } }, 'All at once (isolated copies)')),
+        h('label', null, 'Failed responses'), examplesSel,
         h('label', null, 'Data variables'), h('div', { class: 'row' }, dataBtn, clearData, dataLabel)),
-      h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Collection and folder scripts run before each request. Variable values reset each iteration; data variables win over environment ones.'),
+      h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Collection and folder scripts run before each request. Iterations share variables unless parallel; data variables win over environment ones.'),
     );
   }
 
@@ -145,6 +157,8 @@ export function renderRunner(root, t) {
       const summary = await R.runBatch({
         entry, folderId: t.ref?.item ?? null,
         iterations: s0.iterations, rows, delayMs: s0.delayMs,
+        env: s0.env === undefined ? undefined : (S.state.ws?.environments || []).find((e) => e.uid === s0.env) || null,
+        parallel: !!s0.parallel, saveExamples: s0.saveExamples || 'none',
         isStopped: () => s0.stopped,
         onProgress: () => { s0.run.done++; emit('main'); },
       });

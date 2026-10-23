@@ -236,7 +236,7 @@ function formatArg(a) {
 export async function runScript(code, ctx) {
   const result = { tests: [], logs: [], error: null, skipRequest: false };
   if (!code || !code.trim()) return result;
-  const { libs, resolver, scopes } = ctx;
+  const { libs = {}, resolver, scopes } = ctx;
   const pending = [];
   const track = (p) => { pending.push(p.catch(() => {})); return p; };
 

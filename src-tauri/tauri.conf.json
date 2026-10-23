@@ -25,7 +25,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "DeveloperTool",
     "icon": [
       "icons/32x32.png",
@@ -37,6 +40,15 @@
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0QjM5MTg4OTg1OTQzQkUKUldTK1ExbVlpSkd6bERMdk9lR3N4dGRSRWcvbTYrMXZzbENtdVlzS3lDNERGNXNSOFozOEFGWDgK",
+      "endpoints": [
+        "https://github.com/Roqak/dispatch/releases/latest/download/latest.json"
+      ]
     }
   }
 }

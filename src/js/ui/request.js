@@ -1,5 +1,6 @@
 import { h, icon, showMenu, toast, errText, fmtBytes, fmtMs, methodClass } from './dom.js';
 import { varInput, kvSection, codeArea, highlightJson, subtabs } from './components.js';
+import { diffResponses } from '../jsondiff.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
 import { state } from '../store.js';
@@ -307,15 +308,23 @@ const SNIPPETS = {
     ['Set an environment variable', "pm.environment.set('name', 'value');"],
     ['Set a collection variable', "pm.collectionVariables.set('name', 'value');"],
     ['Add a header', "pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') });"],
+    ['Timestamp header', "pm.request.headers.upsert({ key: 'X-Timestamp', value: String(Math.floor(Date.now() / 1000)) });"],
+    ['Add bearer token from the environment', "const token = pm.environment.get('token');\nif (token) pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + token });"],
     ['Sign the body with HMAC-SHA256', "const sig = CryptoJS.HmacSHA256(pm.request.body.raw || '', pm.environment.get('secret')).toString(CryptoJS.enc.Hex);\npm.request.headers.upsert({ key: 'X-Signature', value: sig });"],
+    ['MD5 of the body', "const md5 = CryptoJS.MD5(pm.request.body.raw || '').toString(CryptoJS.enc.Hex);\npm.request.headers.upsert({ key: 'X-MD5', value: md5 });"],
+    ['Base64 encode the body', "const encoded = btoa(pm.request.body.raw || '');\npm.request.headers.upsert({ key: 'X-Encoded', value: encoded });"],
     ['Send a request first', "pm.sendRequest({\n  url: pm.variables.replaceIn('{{baseUrl}}/token'),\n  method: 'POST',\n  header: { 'Content-Type': 'application/json' },\n  body: { mode: 'raw', raw: JSON.stringify({ id: pm.environment.get('clientId') }) }\n}, (err, res) => {\n  if (!err) pm.environment.set('token', res.json().token);\n});"],
+    ['Skip this request when a variable is missing', "if (!pm.environment.get('token')) {\n  console.log('no token yet, skipping');\n  pm.execution.skipRequest();\n}"],
   ],
   test: [
     ['Status code is 200', "pm.test('Status code is 200', () => {\n  pm.response.to.have.status(200);\n});"],
     ['Response time under 500 ms', "pm.test('Response time is under 500 ms', () => {\n  pm.expect(pm.response.responseTime).to.be.below(500);\n});"],
     ['Check a JSON value', "pm.test('Has the expected value', () => {\n  const json = pm.response.json();\n  pm.expect(json.status).to.eql('success');\n});"],
+    ['Body is valid JSON', "pm.test('Body is valid JSON', () => {\n  pm.response.to.have.jsonBody();\n});"],
     ['Save a value for later requests', "const json = pm.response.json();\npm.environment.set('token', json.token);"],
+    ['Chain into the next environment value', "const json = pm.response.json();\npm.environment.set('userId', json.id);\npm.collectionVariables.set('lastUserId', json.id);"],
     ['Header exists', "pm.test('Content-Type is present', () => {\n  pm.response.to.have.header('Content-Type');\n});"],
+    ['Fail loudly with a custom message', "pm.test('Payment succeeded', () => {\n  const json = pm.response.json();\n  pm.expect(json.error, 'payment error field present: ' + JSON.stringify(json)).to.eql(null);\n});"],
   ],
 };
 
@@ -385,6 +394,7 @@ export function renderResponse(root, t) {
     { id: 'headers', label: 'Headers', count: res?.headers?.length || '' },
     { id: 'tests', label: tests.length ? `Tests ${passed}/${tests.length}` : 'Tests' },
     { id: 'console', label: 'Console', count: r.logs?.length || '' },
+    ...(res ? [{ id: 'diff', label: 'Diff' }] : []),
   ];
   const statusCls = res ? `s${String(res.status)[0]}` : '';
   const meta = res ? h('div', { class: 'resp-meta' },
@@ -427,8 +437,91 @@ export function renderResponse(root, t) {
       h('div', null, h('div', null, x.name), x.error ? h('div', { class: 'err' }, x.error) : null))));
   } else if (t.respTab === 'console') {
     body.append(consoleView(r));
+  } else if (t.respTab === 'diff' && res) {
+    body.append(diffView(root, t, res));
   }
   root.replaceChildren(head, body);
+}
+
+/**
+ * Response diff: compare this response against an example, a history entry,
+ * or another open tab. Value diff for JSON bodies, line diff otherwise.
+ */
+function diffView(root, t, res) {
+  const state = (t.diffState = t.diffState || { sourceId: null, ignoreArrayOrder: false });
+
+  const sources = [];
+  for (const ex of t.draft?.response || []) {
+    const text = typeof ex.body === 'string' ? ex.body : ex.body?.raw ?? '';
+    sources.push({ id: `ex:${ex.id || ex.name}`, label: `Example: ${ex.name}`, text });
+  }
+  for (const hx of (S.state.history || []).filter((x) => x.bodyText).slice(0, 30)) {
+    sources.push({ id: `hist:${hx.id}`, label: `History: ${hx.method} ${hx.name || hx.url?.slice(0, 36)} · ${new Date(hx.ts).toLocaleTimeString()}`, text: hx.bodyText });
+  }
+  for (const other of S.state.tabs.filter((x) => x.id !== t.id && x.response?.response?.bodyText)) {
+    sources.push({ id: `tab:${other.id}`, label: `Tab: ${C.tabTitle(other)}`, text: other.response.response.bodyText });
+  }
+  sources.push({ id: 'blank', label: 'Paste text…', text: null });
+
+  const wrap = h('div', { class: 'diff-view' });
+  const sourceSel = h('select', { class: 'select', onchange: () => { state.sourceId = sourceSel.value; render(); } });
+  const orderSel = h('select', { class: 'select', title: 'Array comparison', onchange: () => { state.ignoreArrayOrder = orderSel.value === 'unordered'; render(); } },
+    h('option', { value: 'ordered', selected: !state.ignoreArrayOrder }, 'Arrays in order'),
+    h('option', { value: 'unordered', selected: state.ignoreArrayOrder }, 'Arrays unordered'));
+
+  const content = h('div', { class: 'diff-content' });
+  const pasteZone = h('div');
+  const pasteBox = codeArea({ value: (t.diffState.paste ?? ''), oninput: (v) => { t.diffState.paste = v; render(); } });
+  wrap.append(h('div', { class: 'resp-tools' }, sourceSel, h('span', { class: 'grow' }), orderSel), pasteZone, content);
+
+  function sideTextOf() {
+    const src = sources.find((x) => x.id === state.sourceId);
+    if (src?.id === 'blank') return t.diffState.paste ?? '';
+    return src?.text ?? '';
+  }
+
+  function render() {
+    if (state.sourceId != null && !sources.some((x) => x.id === state.sourceId)) state.sourceId = null;
+    if (state.sourceId == null) state.sourceId = sources.find((x) => x.text)?.id ?? 'blank';
+    sourceSel.replaceChildren(...sources.map((src) => h('option', { value: src.id, selected: src.id === state.sourceId }, src.label)));
+    if (state.sourceId === 'blank') pasteZone.replaceChildren(h('p', { class: 'hint', style: { margin: '8px 0' } }, 'Paste the response to compare against:'), pasteBox);
+    else pasteZone.replaceChildren();
+    content.replaceChildren();
+    diffRows(t, content, 'current', sideTextOf(), state.ignoreArrayOrder);
+  }
+
+  render();
+  return wrap;
+}
+
+/** Renders the actual diff rows (current on the left, `against` on the right). */
+function diffRows(t, content, side, againstText, ignoreArrayOrder) {
+  const currentText = t.response?.response?.bodyText ?? '';
+  const { mode, rows, stats } = diffResponses(currentText, againstText, { ignoreArrayOrder });
+  const head = h('div', { class: 'diff-summary' },
+    h('span', { class: ['chip', stats.added + stats.removed ? 'bad' : 'ok'] }, mode === 'json' ? `${stats.added} added · ${stats.removed} removed` : `${stats.added} newer · ${stats.removed} older lines`),
+    h('span', { class: 'muted', style: { fontSize: '12px' } }, stats.same));
+  const table = h('table', { class: 'diff-table' });
+  if (mode === 'json') {
+    for (const row of rows) {
+      table.append(h('tr', { class: `diff-${row.type}` },
+        h('td', null, row.path || '(root)'),
+        h('td', null, fmtValue(row.a)),
+        h('td', null, fmtValue(row.b))));
+    }
+  } else {
+    for (const row of rows) {
+      table.append(h('tr', { class: `diff-${row.type}` },
+        h('td', null, `${row.line}`),
+        h('td', { class: 'mono' }, row.text)));
+    }
+  }
+  content.append(head, h('div', { class: 'diff-scroll' }, table));
+}
+
+function fmtValue(v) {
+  if (v === undefined) return '';
+  return JSON.stringify(v)?.slice(0, 160) ?? String(v);
 }
 
 function consoleView(r) {

@@ -325,7 +325,7 @@ function envMenu(e, env, row) {
 
 function historyView() {
   const q = filter.toLowerCase();
-  const items = state.history.filter((x) => !q || x.url?.toLowerCase().includes(q) || x.name?.toLowerCase().includes(q));
+  const items = state.history.filter((x) => !q || x.url?.toLowerCase().includes(q) || x.name?.toLowerCase().includes(q) || (x.method || '').toLowerCase().includes(q));
   if (!items.length) return [h('div', { class: 'side-empty' }, h('p', null, q ? 'Nothing matches.' : 'Requests you send show up here.'))];
   const out = [];
   let lastDay = '';

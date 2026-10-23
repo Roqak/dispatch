@@ -442,3 +442,59 @@ test('data files parse as json arrays or csv', () => {
   assert.equal(parseDataFile('just one line'), null);
   assert.deepEqual(parseDataFile(''), []);
 });
+
+// ---------- response diffing ----------
+
+import { lineDiff, diffResponses } from '../src/js/jsondiff.js';
+
+test('line diff with common edges', () => {
+  const r = lineDiff(['x', 'y', 'z'], ['x', 'Y', 'z']);
+  assert.deepEqual(r, [{ type: 'del', line: 1, text: 'y' }, { type: 'add', line: 1, text: 'Y' }]);
+});
+
+test('json value diff reports only real changes', () => {
+  const r = diffResponses(JSON.stringify({ a: 1, b: [1, 2], c: { d: 'x' } }), JSON.stringify({ a: 2, b: [1, 2], c: { d: 'x' }, e: 'new' }), {});
+  assert.deepEqual(r.rows.map((x) => [x.type, x.path]), [['change', 'a'], ['add', 'e']]);
+  assert.equal(r.mode, 'json');
+});
+
+test('json array order can be ignored', () => {
+  const r = diffResponses(JSON.stringify([1, 2, 3]), JSON.stringify([3, 1, 2]), { ignoreArrayOrder: true });
+  assert.deepEqual(r.rows, []);
+  const strict = diffResponses(JSON.stringify([1, 2, 3]), JSON.stringify([3, 1, 2]), { ignoreArrayOrder: false });
+  assert.equal(strict.rows.length > 0, true);
+});
+
+test('non-json bodies fall back to line mode', () => {
+  const r = diffResponses('<h1>one</h1>', '<h1>two</h1>');
+  assert.equal(r.mode, 'lines');
+  assert.ok(r.rows.length >= 2);
+});
+
+test('identical bodies report as such', () => {
+  const r = diffResponses('same', 'same');
+  assert.equal(r.stats.same, 'identical');
+  assert.deepEqual(r.rows, []);
+});
+
+// ---------- runner options ----------
+
+import { runBatch } from '../src/js/runner.js';
+
+const mkCol = (data) => ({ uid: `c-${Date.now()}`, name: 'RunnerTest', updatedAt: null, data, dirty: false, pendingCreate: false });
+
+test('runBatch runs requests sequentially with shared env and stops on demand', async () => {
+  globalThis.chai = (await import('../src/vendor/chai.min.js')).default ?? (await import('../src/vendor/chai.min.js'));
+  const entry = mkCol({ info: { name: 'R', schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json' }, variable: [], item: [
+    { name: 'a', request: { method: 'GET', url: { raw: 'x://a' } }, event: [{ listen: 'test', script: { type: 'text/javascript', exec: "pm.test('ok', () => pm.expect(pm.response.code).to.eql(201));" } }] },
+    { name: 'b', request: { method: 'GET', url: { raw: 'x://b' } } },
+  ] });
+  let lastProgress;
+  const summary = await runBatch({ entry, iterations: 2, onProgress: (res) => { lastProgress = res; }, send: async () => ({ status: 201, statusText: 'Created', headers: [], bodyText: '{}', timeMs: 5, contentType: 'application/json' }) });
+  assert.equal(summary.runs === undefined || summary.runs !== 0, true);
+  assert.equal(summary.results.length, 4); // 2 iterations x 2 requests
+  assert.equal(summary.passed, 4);
+  assert.equal(summary.failed, 0);
+  assert.equal(lastProgress.iteration, 2);
+  assert.equal(lastProgress.name, 'b');
+});

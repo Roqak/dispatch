@@ -199,6 +199,15 @@ export async function openWorkspace(id, { refresh = true } = {}) {
   state.settings.wsId = id;
   state.settings.wsByProfile = state.settings.wsByProfile || {};
   state.settings.wsByProfile[state.settings.activeProfileId] = id;
+  // No workspace-level env choice yet? Start on this profile's default.
+  if (state.settings.envByWs?.[id] === undefined) {
+    state.settings.envByWs = state.settings.envByWs || {};
+    const profileDefault = state.settings.envByProfile?.[state.settings.activeProfileId];
+    if (profileDefault !== undefined) {
+      const known = state.ws.environments.some((e) => e.uid === profileDefault);
+      if (known || profileDefault === null) state.settings.envByWs[id] = profileDefault || null;
+    }
+  }
   saveSettings();
   emit('sidebar', 'env', 'workspace');
   if (refresh && id !== 'local' && state.hasKey) await refreshWorkspace().catch(() => {});
@@ -516,6 +525,10 @@ export function activeEnvEntry() {
 
 export async function setActiveEnv(uid) {
   state.settings.envByWs[state.ws.id] = uid || null;
+  // Per-profile default: remember this env for the workspace's profile,
+  // so a fresh workspace on this profile starts on the right environment.
+  state.settings.envByProfile = state.settings.envByProfile || {};
+  state.settings.envByProfile[state.settings.activeProfileId] = uid || null;
   saveSettings();
   const env = activeEnvEntry();
   if (env) await ensureEnvironment(env).catch(() => {});
