@@ -41,7 +41,7 @@ mod imp {
     }
 
     pub fn legacy_has(_dir: &std::path::Path) -> bool {
-        matches!(legacy_entry().and_then(|e| e.get_password()), Ok(_))
+        legacy_entry().is_ok_and(|e| e.get_password().is_ok())
     }
 
     pub fn legacy_get(_dir: &std::path::Path) -> Result<Option<String>, String> {
