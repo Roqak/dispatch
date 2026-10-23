@@ -6,6 +6,7 @@ import * as S from '../store.js';
 import { state, emit } from '../store.js';
 import { bridge } from '../bridge.js';
 import { isFolder, itemId } from '../model.js';
+import { localOnlyKeys, persistCurrent, resetCurrent } from '../vars.js';
 import { callsRemaining } from '../sync.js';
 
 // ---------- collection / folder settings ----------
@@ -22,7 +23,8 @@ export function renderContainer(root, t) {
     h('input', { class: 'name-input', value: d.name, oninput: (e) => { d.name = e.target.value; dirty(); C.emitTabs(); } }),
     h('span', { class: 'grow' }),
     h('button', { class: 'btn sm', onclick: () => C.saveTab(t) }, icon('check'), 'Save'));
-  const tabs = [
+  // Rebuilt on every render so the dots and the variable count stay current.
+  const tabs = () => [
     { id: 'overview', label: 'Overview' },
     { id: 'auth', label: 'Authorization', dot: d.auth && d.auth.type !== 'noauth' && d.auth.type !== 'inherit' },
     { id: 'scripts', label: 'Scripts', dot: (d.event || []).length > 0 },
@@ -30,7 +32,7 @@ export function renderContainer(root, t) {
   ];
   const tabsHolder = h('div');
   const pane = h('div', { class: 'pane' });
-  const renderTabs = () => tabsHolder.replaceChildren(subtabs(tabs, t.sub, (id) => { t.sub = id; renderTabs(); renderPane(); }));
+  const renderTabs = () => tabsHolder.replaceChildren(subtabs(tabs(), t.sub, (id) => { t.sub = id; renderTabs(); renderPane(); }));
   function renderPane() {
     pane.replaceChildren();
     if (t.sub === 'overview') {
@@ -47,7 +49,10 @@ export function renderContainer(root, t) {
     } else if (t.sub === 'variables') {
       d.variable = d.variable || [];
       const overlay = (state.ws.colOverlays[entry.uid] = state.ws.colOverlays[entry.uid] || {});
-      pane.append(varsTable({ rows: d.variable, overlay, enabledKey: 'disabled', onChange: () => { dirty(); renderTabs(); }, onOverlay: () => S.overlaysChanged(), resolver }),
+      const onChange = () => { dirty(); renderTabs(); };
+      pane.append(h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '8px' } },
+          currentValueButtons({ rows: d.variable, overlay, enabledKey: 'disabled', onChange, rerender: renderPane })),
+        varsTable({ rows: d.variable, overlay, enabledKey: 'disabled', onChange, onOverlay: () => S.overlaysChanged(), resolver }),
         h('p', { class: 'hint' }, 'Shared values sync with Postman. Current values are only on this Mac, and scripts write to them, just like in Postman.'));
     }
   }
@@ -71,7 +76,7 @@ export function renderEnvTab(root, t) {
     isGlobals ? h('span', { style: { fontSize: '15px', fontWeight: 600 } }, 'Globals') : h('input', { class: 'name-input', value: d.name, oninput: (e) => { d.name = e.target.value; dirty(); C.emitTabs(); } }),
     !isGlobals ? h('button', { class: ['btn sm', isActive && 'primary'], onclick: () => S.setActiveEnv(isActive ? null : env.uid) }, isActive ? 'Active' : 'Set active') : null,
     h('span', { class: 'grow' }),
-    h('button', { class: 'btn sm ghost', title: 'Make current values match the shared values again', onclick: () => { for (const k of Object.keys(overlay)) delete overlay[k]; S.overlaysChanged(); renderEnvTab(root, t); } }, 'Reset current values'),
+    currentValueButtons({ rows: d.values, overlay, enabledKey: 'enabled', onChange: dirty, rerender: () => renderEnvTab(root, t) }),
     h('button', { class: 'btn sm', onclick: () => C.saveTab(t) }, icon('check'), 'Save'));
   const pane = h('div', { class: 'pane' },
     varsTable({ rows: d.values, overlay, enabledKey: 'enabled', onChange: dirty, onOverlay: () => S.overlaysChanged() }),
@@ -80,42 +85,76 @@ export function renderEnvTab(root, t) {
   root.replaceChildren(head, pane);
 }
 
-/** Variables table with shared (synced) and current (local) values. */
+/**
+ * Variables table with shared (synced) and current (local) values. Names that
+ * only have a current value, usually set by a script, show as "not shared yet"
+ * rows until they're given a shared value or persisted.
+ */
 function varsTable({ rows, overlay, enabledKey, onChange, onOverlay }) {
   const isOn = (r) => (enabledKey === 'enabled' ? r.enabled !== false : !r.disabled);
   const setOn = (r, on) => { if (enabledKey === 'enabled') r.enabled = on; else if (on) delete r.disabled; else r.disabled = true; };
+  const fresh = (key = '') => ({ key, value: '', type: 'default', ...(enabledKey === 'enabled' ? { enabled: true } : {}) });
   const tbody = h('tbody');
-  const rowEl = (row) => {
+  const rowEl = (row, local = false) => {
       const ghost = row === null;
-      const r = row || { key: '', value: '', type: 'default', ...(enabledKey === 'enabled' ? { enabled: true } : {}) };
-      const tr = h('tr', { class: [ghost && 'ghost', !ghost && !isOn(r) && 'disabled'] });
-      // First keystroke in the blank row turns it into a real row and adds a new blank one.
-      const ensure = () => { if (ghost && !rows.includes(r)) { rows.push(r); tr.classList.remove('ghost'); tbody.append(rowEl(null)); } };
+      const r = row || fresh();
+      const tr = h('tr', { class: [ghost && 'ghost', local && 'local', !ghost && !isOn(r) && 'disabled'] });
+      // Shared edits turn a blank or local-only row into a real (synced) one.
+      const attach = () => {
+        if (rows.includes(r)) return;
+        rows.push(r);
+        tr.classList.remove('ghost', 'local');
+        shared.placeholder = '';
+        if (ghost) tbody.append(rowEl(null));
+      };
+      // The first keystroke in the blank row makes it real; local rows stay local.
+      const ensure = () => { if (ghost) attach(); };
       const secret = r.type === 'secret';
-      const shared = h('input', { class: 'cell', type: secret ? 'password' : 'text', value: r.value ?? '', spellcheck: 'false', oninput: (e) => { ensure(); r.value = e.target.value; onChange(); } });
+      const shared = h('input', { class: 'cell', type: secret ? 'password' : 'text', value: r.value ?? '', placeholder: local ? 'Not shared yet' : '', title: local ? 'Only a current value exists. Type a shared value, or use Persist, to sync it.' : null, spellcheck: 'false', oninput: (e) => { attach(); r.value = e.target.value; onChange(); } });
       const curHas = Object.prototype.hasOwnProperty.call(overlay, r.key);
       const current = h('input', { class: 'cell', type: secret ? 'password' : 'text', value: curHas ? overlay[r.key] ?? '' : '', placeholder: ghost ? '' : secret ? (r.value ? '••••••' : '') : (r.value ?? ''), spellcheck: 'false', oninput: (e) => { ensure(); if (!r.key) return; overlay[r.key] = e.target.value; onOverlay(); } });
       tr.append(
-        h('td', { class: 'chk' }, h('input', { type: 'checkbox', checked: ghost || isOn(r), onchange: (e) => { ensure(); setOn(r, e.target.checked); tr.classList.toggle('disabled', !e.target.checked); onChange(); } })),
+        h('td', { class: 'chk' }, h('input', { type: 'checkbox', checked: ghost || isOn(r), onchange: (e) => { attach(); setOn(r, e.target.checked); tr.classList.toggle('disabled', !e.target.checked); onChange(); } })),
         h('td', null, h('input', { class: 'cell', value: r.key, placeholder: ghost ? 'Add variable' : 'Name', spellcheck: 'false', oninput: (e) => {
           ensure();
           const old = r.key;
           r.key = e.target.value;
           if (old && Object.prototype.hasOwnProperty.call(overlay, old)) { overlay[r.key] = overlay[old]; delete overlay[old]; onOverlay(); }
-          onChange();
+          if (!local || rows.includes(r)) onChange();
         } })),
-        h('td', { class: 'type' }, h('select', { class: 'cell select', onchange: (e) => { ensure(); r.type = e.target.value; onChange(); render(); } },
+        h('td', { class: 'type' }, h('select', { class: 'cell select', onchange: (e) => { attach(); r.type = e.target.value; onChange(); render(); } },
           h('option', { value: 'default', selected: !secret }, 'default'), h('option', { value: 'secret', selected: secret }, 'secret'))),
         h('td', null, shared),
         h('td', null, current),
-        h('td', { class: 'del' }, h('button', { class: 'icon-btn sm', title: 'Remove', onclick: () => { const i = rows.indexOf(r); if (i >= 0) { rows.splice(i, 1); delete overlay[r.key]; onChange(); onOverlay(); render(); } } }, icon('x'))));
+        h('td', { class: 'del' }, h('button', { class: 'icon-btn sm', title: 'Remove', onclick: () => {
+          const i = rows.indexOf(r);
+          if (i >= 0) { rows.splice(i, 1); onChange(); }
+          delete overlay[r.key];
+          onOverlay();
+          render();
+        } }, icon('x'))));
       return tr;
   };
-  const render = () => tbody.replaceChildren(...[...rows, null].map(rowEl));
+  const render = () => tbody.replaceChildren(...rows.map((r) => rowEl(r)), ...localOnlyKeys(rows, overlay).map((k) => rowEl(fresh(k), true)), rowEl(null));
   render();
   return h('table', { class: 'kv' },
     h('thead', null, h('tr', null, h('th', { class: 'chk' }), h('th', null, 'Variable'), h('th', { class: 'type' }, 'Type'), h('th', null, 'Shared value (synced)'), h('th', null, 'Current value (this Mac)'), h('th', { class: 'del' }))),
     tbody);
+}
+
+/** Persist and Reset buttons for a variables table, as in Postman. */
+function currentValueButtons({ rows, overlay, enabledKey, onChange, rerender }) {
+  return [
+    h('button', { class: 'btn sm ghost', title: 'Copy every current value into the shared value, so your team gets it when you save', onclick: () => {
+      const n = persistCurrent(rows, overlay, enabledKey);
+      S.overlaysChanged();
+      if (!n) { toast('The shared values already match the current values.'); rerender(); return; }
+      onChange();
+      rerender();
+      toast(`Copied ${n} current value${n === 1 ? '' : 's'} into the shared values. Save to sync ${n === 1 ? 'it' : 'them'} with Postman.`);
+    } }, 'Persist current values'),
+    h('button', { class: 'btn sm ghost', title: 'Make current values match the shared values again', onclick: () => { resetCurrent(overlay); S.overlaysChanged(); rerender(); } }, 'Reset current values'),
+  ];
 }
 
 // ---------- Save As ----------

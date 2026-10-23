@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { parseUrl, setRawUrl, rawWithQuery, normaliseImport, forUpload, findItem, effectiveAuth, getScript, setScript, duplicateItem } from '../src/js/model.js';
-import { Scope, Resolver } from '../src/js/vars.js';
+import { Scope, Resolver, DYNAMIC, localOnlyKeys, persistCurrent, resetCurrent } from '../src/js/vars.js';
 import { runScript } from '../src/js/scripts.js';
 import { buildOutgoing, execute } from '../src/js/send.js';
 
@@ -279,4 +279,46 @@ test('setRawUrl keeps param descriptions and disabled params in place', () => {
 test('duplicate gives examples new ids', () => {
   const d = duplicateItem({ id: 'r', name: 'R', request: {}, response: [{ id: 'ex1', name: 'ok' }] });
   assert.notEqual(d.response[0].id, 'ex1');
+});
+
+test('script-created variables show up as local-only, and persist turns them into shared ones', async () => {
+  const col = [{ key: 'baseUrl', value: 'https://a.test' }];
+  const colOverlay = {};
+  const s = { local: new Scope([], {}), environment: new Scope([], {}), collection: new Scope(col, colOverlay), globals: new Scope([], {}) };
+  const r = await runScript("pm.collectionVariables.set('lastStatus', 200); pm.collectionVariables.set('baseUrl', 'https://b.test'); pm.collectionVariables.unset('gone');", { phase: 'test', request: { method: 'GET', url: 'x', header: [] }, response: { status: 200, headers: [], bodyText: '' }, resolver: new Resolver(s), scopes: s, libs });
+  assert.equal(r.error, null);
+  assert.deepEqual(localOnlyKeys(col, colOverlay), ['lastStatus'], 'unset (null) and existing names are not local-only');
+
+  assert.equal(persistCurrent(col, colOverlay, 'disabled'), 2);
+  assert.deepEqual(col, [{ key: 'baseUrl', value: 'https://b.test' }, { key: 'lastStatus', value: '200', type: 'default' }]);
+  assert.deepEqual(colOverlay, { gone: null }, 'persisted current values are cleared; unsets are kept');
+  assert.equal(persistCurrent(col, colOverlay, 'disabled'), 0);
+
+  const env = [{ key: 'a', value: '1', enabled: false }];
+  const envOverlay = { a: '1', b: '2' };
+  assert.equal(persistCurrent(env, envOverlay, 'enabled'), 1, 'an unchanged value does not count');
+  assert.deepEqual(env[1], { key: 'b', value: '2', type: 'default', enabled: true });
+  assert.equal(env[0].enabled, false, 'persist leaves enabled state alone');
+  resetCurrent(envOverlay);
+  assert.deepEqual(envOverlay, {});
+});
+
+test('resolver lists names by winning scope, masks secrets, and knows Postman dynamic variables', () => {
+  const s = scopes([{ key: 'token', value: 'abc', type: 'secret', enabled: true }, { key: 'a', value: 'env', enabled: true }], [{ key: 'a', value: 'col' }, { key: 'b', value: 'col' }]);
+  const r = new Resolver(s);
+  const named = r.names().filter((n) => n.scope !== 'dynamic');
+  assert.deepEqual(named.map((n) => [n.name, n.scope]), [['token', 'environment'], ['a', 'environment'], ['b', 'collection']]);
+  assert.equal(named[0].secret, true);
+  assert.equal(r.replace('Bearer {{token}}'), 'Bearer abc');
+  assert.equal(r.replace('Bearer {{token}}', 0, { mask: true }), 'Bearer ••••••');
+  assert.ok(r.names().some((n) => n.name === '$randomCity' && n.scope === 'dynamic'));
+
+  for (const [name, fn] of Object.entries(DYNAMIC)) {
+    const v = fn();
+    assert.equal(typeof v, 'string', name);
+    assert.ok(v.length > 0, name);
+  }
+  assert.ok(Object.keys(DYNAMIC).length > 90);
+  assert.match(r.replace('{{$randomIP}}'), /^\d+\.\d+\.\d+\.\d+$/);
+  assert.match(r.replace('{{$randomHexColor}}'), /^#[0-9a-f]{6}$/);
 });

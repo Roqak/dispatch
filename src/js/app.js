@@ -115,7 +115,7 @@ on('tabs', () => { renderTabs(); sidebarRefresh(); });
 on('main', renderMain);
 on('response', updateRunState);
 on('env', () => { renderTopRight(); sidebarRefresh(); repaintVars(); const t = C.activeTab(); if (t && (t.kind === 'env' || t.kind === 'globals') && !t.dirty) renderMain(); });
-on('env-values', () => { repaintVars(); const t = C.activeTab(); if (t && (t.kind === 'env' || t.kind === 'globals') && !workspaceEl.contains(document.activeElement)) renderMain(); });
+on('env-values', () => { repaintVars(); const t = C.activeTab(); if (t && (t.kind === 'env' || t.kind === 'globals' || (t.kind === 'container' && t.sub === 'variables')) && !workspaceEl.contains(document.activeElement)) renderMain(); });
 on('tabs-refresh', () => {
   C.refreshCleanTabs();
   const t = C.activeTab();

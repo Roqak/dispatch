@@ -4,9 +4,24 @@ import { h, icon } from './dom.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+const SCOPE_LABEL = { local: 'Local', environment: 'Environment', collection: 'Collection', globals: 'Global', dynamic: 'Dynamic' };
+
+/** Hover text: the resolved string, then where each variable's value comes from. */
+function varTitle(v, r) {
+  const names = [...new Set([...v.matchAll(/\{\{([^{}]+?)\}\}/g)].map((m) => m[1].trim()))];
+  const lines = names.map((n) => {
+    const hit = r.lookup(n);
+    if (!hit) return `${n}: not defined in any scope`;
+    if (hit.scope === 'dynamic') return `${n}: new random value on each send (Dynamic)`;
+    return `${n}: ${hit.secret ? '••••••' : hit.value} (${SCOPE_LABEL[hit.scope]})`;
+  });
+  return [r.replace(v, 0, { mask: true }), '', ...lines].join('\n');
+}
+
 /**
  * Single-line input that highlights {{variables}}: green when defined in the
- * active scopes, red when not. Hover shows the resolved value.
+ * active scopes, red when not. Hover shows the resolved value and each
+ * variable's scope; typing {{ suggests the variables in reach.
  */
 export function varInput({ value = '', placeholder = '', oninput, onkeydown, resolver, small = false, cls, readonly = false }) {
   const mirror = h('div', { class: 'mirror', 'aria-hidden': 'true' });
@@ -27,10 +42,65 @@ export function varInput({ value = '', placeholder = '', oninput, onkeydown, res
     html += esc(v.slice(last));
     mirror.innerHTML = html;
     mirror.scrollLeft = input.scrollLeft;
-    if (r && v.includes('{{')) input.title = r.replace(v);
+    if (r && v.includes('{{')) input.title = varTitle(v, r);
     else input.removeAttribute('title');
   };
-  input.addEventListener('input', () => { paint(); oninput?.(input.value); });
+
+  // ---- {{ autocomplete ----
+  let menu = null;
+  let items = [];
+  let active = 0;
+  let start = 0; // index just after the {{ being completed
+  const closeMenu = () => { menu?.remove(); menu = null; };
+  const choose = (item) => {
+    const v = input.value;
+    const caret = input.selectionStart;
+    // Swallow the rest of a name already being edited, and its closing braces.
+    const rest = /^[^{}\s]*\}\}/.exec(v.slice(caret))?.[0] || '';
+    const next = `${v.slice(0, start)}${item.name}}}`;
+    input.value = next + v.slice(caret + rest.length);
+    input.setSelectionRange(next.length, next.length);
+    closeMenu();
+    paint();
+    oninput?.(input.value);
+  };
+  const showMenu = () => {
+    const m = resolver && !readonly ? /\{\{([^{}\s]*)$/.exec(input.value.slice(0, input.selectionStart)) : null;
+    if (!m) return closeMenu();
+    start = input.selectionStart - m[1].length;
+    const q = m[1].toLowerCase();
+    // Dynamic variables only join in once you type {{$ (or nothing yet), as in Postman.
+    const withDynamic = !q || q.startsWith('$');
+    const all = resolver().names().filter((n) => (withDynamic || n.scope !== 'dynamic') && n.name.toLowerCase().includes(q));
+    // Prefix matches first, then your own variables before dynamic ones.
+    const rank = (n) => (n.name.toLowerCase().startsWith(q) ? 0 : 2) + (n.scope === 'dynamic' ? 1 : 0);
+    items = all.sort((a, b) => rank(a) - rank(b)).slice(0, 12);
+    if (!items.length) return closeMenu();
+    active = 0;
+    if (!menu) { menu = h('div', { class: 'menu var-suggest' }); document.body.append(menu); }
+    const box = input.getBoundingClientRect();
+    Object.assign(menu.style, { left: `${box.left}px`, top: `${box.bottom + 4}px`, maxWidth: `${Math.max(320, box.width)}px` });
+    renderMenu();
+  };
+  const renderMenu = () => menu.replaceChildren(...items.map((n, i) => h('button', {
+    class: i === active && 'on',
+    onmousedown: (e) => { e.preventDefault(); choose(n); },
+  }, h('span', { class: 'vs-name' }, n.name), h('span', { class: 'vs-val' }, n.scope === 'dynamic' ? '' : n.secret ? '••••••' : String(n.value ?? '')), h('span', { class: 'k' }, SCOPE_LABEL[n.scope]))));
+  // Registered before the caller's handler so Enter picks a suggestion instead of sending.
+  input.addEventListener('keydown', (e) => {
+    if (!menu) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') active = (active + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+    else if (e.key === 'Enter' || e.key === 'Tab') { choose(items[active]); }
+    else if (e.key === 'Escape') closeMenu();
+    else return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (menu) renderMenu();
+  });
+  input.addEventListener('blur', closeMenu);
+  input.addEventListener('click', showMenu);
+
+  input.addEventListener('input', () => { paint(); oninput?.(input.value); showMenu(); });
   input.addEventListener('scroll', () => { mirror.scrollLeft = input.scrollLeft; });
   input.addEventListener('keyup', () => { mirror.scrollLeft = input.scrollLeft; });
   if (onkeydown) input.addEventListener('keydown', onkeydown);
