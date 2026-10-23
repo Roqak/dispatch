@@ -251,6 +251,9 @@ export const AUTH_TYPES = [
   ['basic', 'Basic Auth'],
   ['apikey', 'API Key'],
   ['oauth2', 'OAuth 2.0'],
+  ['digest', 'Digest Auth'],
+  ['hawk', 'Hawk Authentication'],
+  ['awsSigV4', 'AWS Signature v4'],
 ];
 
 export function authParam(auth, key) {

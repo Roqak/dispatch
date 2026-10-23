@@ -85,6 +85,19 @@ fn migrate_legacy_key(app: AppHandle, profile_id: String) -> Result<bool, String
     secrets::legacy_copy_value(&data_dir(&app)?, safe_name(&profile_id)?)
 }
 
+// ---------- Generic secret slots (e.g. client-certificate passwords) ----------
+
+#[tauri::command]
+fn secret_get(app: AppHandle, key: String) -> Result<String, String> {
+    Ok(secrets::store_get(&data_dir(&app)?, safe_name(&key)?)?.unwrap_or_default())
+}
+
+/// Empty value deletes the slot.
+#[tauri::command]
+fn secret_put(app: AppHandle, key: String, value: String) -> Result<(), String> {
+    secrets::store_set(&data_dir(&app)?, safe_name(&key)?, &value)
+}
+
 // ---------- Local storage (cache, history, settings) ----------
 
 #[tauri::command]
@@ -163,6 +176,8 @@ pub fn run() {
             delete_api_key,
             has_legacy_api_key,
             migrate_legacy_key,
+            secret_get,
+            secret_put,
             store_read,
             store_write,
             open_text_file,

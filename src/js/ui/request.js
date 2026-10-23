@@ -215,6 +215,36 @@ export function authEditor({ target, kind, parents = [], collection, resolver, o
     } else {
       grid.append(h('p', { class: 'hint full' }, 'Dispatch can\'t open a browser sign-in for the authorization code flow yet. Get a token elsewhere (for example in Postman) and paste it into "Current token".'));
     }
+  } else if (current === 'digest') {
+    grid.append(
+      ...field('Username', 'username'),
+      ...field('Password', 'password', { secret: true }),
+      ...field('Realm', 'realm', { placeholder: 'Optional — filled from the server\'s challenge' }),
+      ...field('Server nonce', 'nonce', { placeholder: 'Optional — obtained automatically on a 401' }),
+      ...choice('Algorithm', 'algorithm', [['', 'Let the server pick (MD5)'], ['MD5', 'MD5'], ['SHA-256', 'SHA-256']], ''),
+      ...field('Client nonce', 'clientNonce', { placeholder: 'Optional' }),
+      h('span'), h('p', { class: 'hint full', style: { margin: '4px 0 0' } }, 'A Digest request is sent once, and the server\'s 401 challenge completes it automatically — no extra setup.'),
+    );
+  } else if (current === 'hawk') {
+    grid.append(
+      ...field('Auth ID', 'authId', { placeholder: 'id' }),
+      ...field('Auth Key', 'authKey', { secret: true, placeholder: 'key' }),
+      ...choice('Algorithm', 'algorithm', [['sha256', 'SHA-256'], ['sha1', 'SHA-1']], 'sha256'),
+      ...field('User', 'user', { placeholder: 'Optional' }),
+      ...field('Nonce', 'nonce', { placeholder: 'Optional' }),
+      ...field('Ext (extra data)', 'extraData', { placeholder: 'Optional' }),
+      ...field('App', 'app', { placeholder: 'Optional' }),
+      ...field('Dlg', 'dlg', { placeholder: 'Optional' }),
+      ...choice('Body hash', 'includePayload', [['false', 'Do not hash the payload'], ['true', 'Include the payload hash']], 'false'),
+    );
+  } else if (current === 'awsSigV4') {
+    grid.append(
+      ...field('Access key', 'accessKey'),
+      ...field('Secret key', 'secretKey', { secret: true }),
+      ...field('Region', 'region', { placeholder: 'us-east-1' }),
+      ...field('Service', 'service', { placeholder: 'e.g. execute-api, s3, iam' }),
+      ...field('Session token', 'sessionToken', { secret: true, placeholder: 'Optional (temporary credentials)' }),
+    );
   } else {
     box.append(h('div', { class: 'note warn', style: { marginTop: '12px' } }, icon('alert'), h('span', null, `Dispatch can't edit or apply "${current}" auth yet. It's kept exactly as is and stays in sync with Postman, but requests here are sent without it.`)));
   }

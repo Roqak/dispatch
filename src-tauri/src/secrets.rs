@@ -116,4 +116,17 @@ pub fn legacy_copy_value(dir: &std::path::Path, profile_id: &str) -> Result<bool
     }
 }
 
+/// Generic secret slot (e.g. client-certificate passwords), same storage rules
+/// as API keys: Keychain on macOS, a 0600 file named `<key>-secret` elsewhere.
+pub fn store_get(dir: &std::path::Path, key: &str) -> Result<Option<String>, String> {
+    imp::get(dir, &format!("{key}__slot"))
+}
+
+pub fn store_set(dir: &std::path::Path, key: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return imp::delete(dir, &format!("{key}__slot"));
+    }
+    imp::set(dir, &format!("{key}__slot"), value)
+}
+
 pub use imp::{delete, get, legacy_has, set};

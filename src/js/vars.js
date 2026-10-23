@@ -204,7 +204,7 @@ export class Resolver {
   /** scopes: { local, environment, collection, globals } as Scope instances */
   constructor(scopes) {
     this.scopes = scopes;
-    this.order = ['local', 'environment', 'collection', 'globals'];
+    this.order = ['local', 'data', 'environment', 'collection', 'globals'];
   }
   lookup(name) {
     for (const s of this.order) {

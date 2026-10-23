@@ -8,6 +8,7 @@ import { bridge } from '../bridge.js';
 import { isFolder, itemId } from '../model.js';
 import { localOnlyKeys, persistCurrent, resetCurrent } from '../vars.js';
 import { callsRemaining } from '../sync.js';
+import { pwSlotKey } from '../transport.js';
 
 // ---------- collection / folder settings ----------
 
@@ -53,7 +54,7 @@ export function renderContainer(root, t) {
       pane.append(h('div', { class: 'row', style: { justifyContent: 'flex-end', marginBottom: '8px' } },
           currentValueButtons({ rows: d.variable, overlay, enabledKey: 'disabled', onChange, rerender: renderPane })),
         varsTable({ rows: d.variable, overlay, enabledKey: 'disabled', onChange, onOverlay: () => S.overlaysChanged(), resolver }),
-        h('p', { class: 'hint' }, 'Shared values sync with Postman. Current values are only on this Mac, and scripts write to them, just like in Postman.'));
+        h('p', { class: 'hint' }, 'Shared values sync with Postman. Current values are only on this device, and scripts write to them, just like in Postman.'));
     }
   }
   renderTabs();
@@ -80,7 +81,7 @@ export function renderEnvTab(root, t) {
     h('button', { class: 'btn sm', onclick: () => C.saveTab(t) }, icon('check'), 'Save'));
   const pane = h('div', { class: 'pane' },
     varsTable({ rows: d.values, overlay, enabledKey: 'enabled', onChange: dirty, onOverlay: () => S.overlaysChanged() }),
-    h('p', { class: 'hint' }, isGlobals ? 'Globals apply to every request in this workspace.' : 'Shared values sync with Postman for everyone in the workspace. Current values stay on this Mac; scripts like ',
+    h('p', { class: 'hint' }, isGlobals ? 'Globals apply to every request in this workspace.' : 'Shared values sync with Postman for everyone in the workspace. Current values stay on this device; scripts like ',
       isGlobals ? null : h('span', { class: 'mono' }, 'pm.environment.set()'), isGlobals ? null : ' write to them, so tokens you fetch never overwrite your team\'s values.'));
   root.replaceChildren(head, pane);
 }
@@ -138,7 +139,7 @@ function varsTable({ rows, overlay, enabledKey, onChange, onOverlay }) {
   const render = () => tbody.replaceChildren(...rows.map((r) => rowEl(r)), ...localOnlyKeys(rows, overlay).map((k) => rowEl(fresh(k), true)), rowEl(null));
   render();
   return h('table', { class: 'kv' },
-    h('thead', null, h('tr', null, h('th', { class: 'chk' }), h('th', null, 'Variable'), h('th', { class: 'type' }, 'Type'), h('th', null, 'Shared value (synced)'), h('th', null, 'Current value (this Mac)'), h('th', { class: 'del' }))),
+    h('thead', null, h('tr', null, h('th', { class: 'chk' }), h('th', null, 'Variable'), h('th', { class: 'type' }, 'Type'), h('th', null, 'Shared value (synced)'), h('th', null, 'Current value (this device)'), h('th', { class: 'del' }))),
     tbody);
 }
 
@@ -256,7 +257,7 @@ export function addProfileDialog(then) {
 export function openSettings() {
   const s = state.settings;
   const body = h('div');
-  const render = () => {
+  const render = async () => {
     const profileRows = state.profiles.map((p) => {
       const acc = state.accounts[p.id];
       const who = acc?.fullName || acc?.username;
@@ -281,6 +282,51 @@ export function openSettings() {
     const num = (key, min, max) => h('input', { class: 'input', type: 'number', min, max, value: s[key], style: { width: '120px' }, oninput: (e) => { s[key] = Math.max(min, Math.min(max, Number(e.target.value) || min)); S.saveSettings(); } });
     const toggle = (key) => h('input', { type: 'checkbox', checked: s[key], onchange: (e) => { s[key] = e.target.checked; S.saveSettings(); } });
 
+    // ---- Certificates & proxy ----
+    const transportBox = h('div');
+    {
+      const cfg = (await bridge.read('certificates').catch(() => null)) || { hosts: {}, proxyUrl: '' };
+      cfg.hosts = cfg.hosts || {};
+      const save = () => bridge.write('certificates', cfg).catch((e) => console.error('save failed certificates', e));
+
+      const renderTransport = () => {
+        const proxyInput = h('input', { class: 'input', value: cfg.proxyUrl || '', placeholder: 'http://user:pass@proxy:8080 — applies to every request', style: { width: '100%' } });
+        proxyInput.addEventListener('change', () => { cfg.proxyUrl = proxyInput.value.trim(); save(); });
+        const rows = Object.entries(cfg.hosts).map(([hostk, entry]) => {
+          const slot = pwSlotKey(entry.slot || hostk);
+          const pw = h('input', { class: 'input', type: 'password', placeholder: 'password', style: { width: '140px' } });
+          bridge.secretGet(slot).then((v) => { pw.value = v || ''; }).catch(() => {});
+          pw.addEventListener('change', () => { entry.slot = pwSlotKey(entry.slot || hostk); bridge.secretPut(slot, pw.value).catch(() => {}); });
+          return h('div', { class: 'row', style: { padding: '4px 0' } },
+            h('span', { class: 'grow', style: { fontFamily: 'var(--mono, monospace)', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis' } }, hostk),
+            h('span', { class: 'muted', style: { fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '34%' } }, entry.path),
+            pw,
+            h('button', { class: 'icon-btn sm', title: 'Remove', onclick: () => { bridge.secretPut(slot, '').catch(() => {}); delete cfg.hosts[hostk]; save(); renderTransport(); } }, icon('x')));
+        });
+        const hostInput = h('input', { class: 'input', placeholder: 'api.example.com', style: { width: '190px' } });
+        const addPw = h('input', { class: 'input', type: 'password', placeholder: 'password', style: { width: '140px' } });
+        let path = '';
+        const pickBtn = h('button', { class: 'btn sm', title: 'Where the certificate file lives (.pfx/.p12 or PEM)', onclick: async () => {
+          const r = await bridge.pickFilePath();
+          if (r) { path = r; pickBtn.textContent = r.split(/[\\/]/).pop(); }
+        } }, 'Choose certificate…');
+        const addBtn = h('button', { class: 'btn sm primary', onclick: async () => {
+          const hostk = hostInput.value.trim().toLowerCase();
+          if (!hostk || !path) { toast('Enter the host and choose a certificate file', { error: true }); return; }
+          cfg.hosts[hostk] = { path, slot: pwSlotKey(hostk) };
+          await bridge.secretPut(pwSlotKey(hostk), addPw.value).catch(() => {});
+          save();
+          toast(`Client certificate set for ${hostk}`);
+          renderTransport();
+        } }, 'Add');
+        transportBox.replaceChildren(
+          h('div', { class: 'form-grid', style: { marginTop: '10px' } }, h('label', null, 'Proxy'), h('div', null, proxyInput)),
+          rows.length ? h('div', { style: { marginTop: '10px' } }, rows) : h('p', { class: 'hint', style: { margin: '8px 0 0' } }, 'No client certificates set.'),
+          h('div', { class: 'row', style: { marginTop: '10px' } }, hostInput, pickBtn, addPw, addBtn));
+      };
+      renderTransport();
+    }
+
     body.replaceChildren(
       h('div', { class: 'settings-section' },
         h('h3', null, 'Profiles'),
@@ -301,6 +347,9 @@ export function openSettings() {
           h('label', null, 'Follow redirects'), h('div', null, toggle('followRedirects')),
           h('label', null, 'Verify SSL certificates'), h('div', null, toggle('verifySsl')),
           h('label', null, 'Cookies'), h('div', null, h('button', { class: 'btn sm', onclick: async () => { await bridge.clearCookies(); toast('Cookies cleared'); } }, 'Clear all cookies')))),
+      h('div', { class: 'settings-section' }, h('h3', null, 'Certificates & proxy'),
+        transportBox,
+        h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Client certificates match by host (exact or *.wildcard). Passwords are stored like API keys, never in plain files. The proxy applies to every request.')),
       h('div', { class: 'settings-section' }, h('h3', null, 'Appearance'),
         h('div', { class: 'form-grid' },
           h('label', null, 'Theme'),

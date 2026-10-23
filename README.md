@@ -1,5 +1,12 @@
 # Dispatch
 
+<p align="center">
+  <img src="docs/screenshots/light.png" alt="Dispatch — request editor and response" width="720">
+  <br><sub>Dispatch in light and dark, with the collection runner.</sub><br>
+  <img src="docs/screenshots/dark.png" alt="Dispatch dark theme" width="49%">
+  <img src="docs/screenshots/runner.png" alt="Dispatch collection runner" width="49%">
+</p>
+
 A lightweight API client that works with your existing Postman account. It reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something much lighter — and it runs entirely on this device without a Postman account too.
 
 Native on **macOS 13+** (Apple Silicon and Intel), **Windows** (10/11) and **Linux** (glibc `x86_64`).
@@ -7,12 +14,13 @@ Native on **macOS 13+** (Apple Silicon and Intel), **Windows** (10/11) and **Lin
 ## What it does
 
 - **Profiles.** A built-in local profile keeps requests, collections and environments on this device only; any Postman account can be added as a profile with its own key, region and workspace memory. Switch from the footer in one click.
+- **Collection runner.** Run every request in a collection or folder in order, from the ⋯ menu. Iterations, per-iteration delay, optional data files (JSON array or CSV) as `{{data}}` variables, a pass/fail matrix with test results, and run history. Collection and folder scripts run; Stop kills it mid-run.
 - **Two-way sync with Postman.** Open any workspace you can see in Postman. Saving a request, folder, collection or environment pushes it back, and changes your teammates make are pulled in when you sync (the ↻ button, or automatically when the window regains focus).
 - **Conflict detection.** If a collection changed in Postman after you last synced, Dispatch asks before saving: overwrite with your version, or load theirs. Loading theirs keeps your edits in your open tabs so you can re-apply them.
 - **Requests.** All common methods, query and path parameters, headers, and bodies as raw text/JSON/XML/HTML, form-data (including file uploads), x-www-form-urlencoded, binary files and GraphQL. Requests are sent from Rust, so there are no browser CORS limits. Cookies persist for the session.
-- **Variables.** `{{variables}}` resolve in the same order as Postman: local, environment, collection, then globals. Dynamic variables such as `{{$guid}}`, `{{$timestamp}}` and `{{$randomEmail}}` work too. The URL bar highlights each variable green when it's defined and red when it isn't.
+- **Variables.** `{{variables}}` resolve in the same order as Postman: local, data (runner), environment, collection, then globals. Dynamic variables such as `{{$guid}}`, `{{$timestamp}}` and `{{$randomEmail}}` work too. The URL bar highlights each variable green when it's defined and red when it isn't.
 - **Shared and current values.** As in Postman, the shared value of a variable syncs with your team. The current value stays on your device, and that's where scripts write. A token saved by `pm.environment.set()` never overwrites the value your teammates see.
-- **Auth.** Inherit from parent, No Auth, Bearer token, Basic, API key (header or query), and OAuth 2.0 with a "Get new access token" button for the client credentials and password grants. Auth types Dispatch can't apply yet are left untouched so they round-trip safely.
+- **Auth.** Inherit from parent, No Auth, Bearer token, Basic, API key (header or query), and OAuth 2.0 with a "Get new access token" button for the client credentials and password grants. AWS Signature v4, Digest (automatic 401 challenge/retry) and Hawk are computed like Postman's. Auth types Dispatch can't apply yet are left untouched so they round-trip safely.
 - **Scripts.** Pre-request and post-response scripts run with Postman's `pm` API: `pm.environment`, `pm.collectionVariables`, `pm.globals`, `pm.variables`, `pm.request`, `pm.response`, `pm.test`, `pm.expect`, `pm.sendRequest` and `console.log`. Collection and folder scripts run before the request's own. The real `chai`, `crypto-js` and `lodash` libraries are bundled, so request-signing scripts that use `CryptoJS.MD5` or `CryptoJS.HmacSHA256` work as they do in Postman.
 - **History.** The last 300 requests you sent, grouped by day. Click one to reopen it in a new tab.
 - **Import and export.** Postman collection (v2.0 and v2.1) and environment JSON files. Importing into a synced workspace also uploads the file to Postman.
@@ -79,12 +87,12 @@ Your data is stored in `~/Library/Application Support/app.dispatch.client/` (mac
 ## Not supported yet
 
 - Live collaboration features: real-time co-editing, comments, forks and pull requests
-- The collection runner, monitors, mock servers, flows, and API definitions
-- WebSocket, gRPC, Socket.IO and MQTT requests
-- OAuth 2.0 authorization code sign-in in a browser window (paste a token instead), and Digest, Hawk, AWS Signature, NTLM and Akamai auth
+- Monitors, mock servers, scheduled and cloud runs, flows, and API definitions
+- gRPC, Socket.IO and MQTT requests
+- AWS SigV4 over multipart/binary bodies (signed as `UNSIGNED-PAYLOAD`; raw, urlencoded and empty bodies hash normally)
 - Deleting whole collections or environments in Postman (do that in Postman; Dispatch picks it up on the next sync)
 - Script libraries other than `chai`, `crypto-js`, `lodash`, `uuid` and `atob`/`btoa` (for example `moment`, `xml2js` or `cheerio`)
-- Per-request client certificates and proxy settings
+- Per-request proxies (the proxy in Settings applies globally)
 
 ## Build from source
 

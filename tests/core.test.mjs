@@ -355,3 +355,90 @@ test('Beautify keeps comments and {{variables}}, and points at real errors', () 
   assert.equal(jsonProblem(src), null);
   assert.match(jsonProblem('{\n  "a": 1, // fine\n  "b": oops\n}'), /oops|line 3/);
 });
+
+// ---------- auth signing ----------
+
+import { awsSigV4Sign, digestHeader, parseDigestChallenge, hawkHeader } from '../src/js/authsign.js';
+import { flattenRequests, parseDataFile } from '../src/js/runner.js';
+
+test('aws sigv4 signs a canned request deterministically', () => {
+  const u = new Date('2026-10-23T12:00:00Z');
+  const { headers } = awsSigV4Sign({
+    method: 'GET',
+    url: 'https://execute-api.us-east-1.amazonaws.com/test/mypath?Action=List&Paging=off',
+    bodyContent: '',
+    params: { accessKey: 'AKIDEXAMPLE', secretKey: 'wJalrXUtnFEMI', region: 'us-east-1', service: 'execute-api' },
+    CryptoJS: libs.CryptoJS,
+    now: u,
+  });
+  const auth = headers.find((h) => h.key === 'Authorization').value;
+  assert.match(auth, /^AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE\/20261023\/us-east-1\/execute-api\/aws4_request,/);
+  assert.match(auth, /SignedHeaders=host;x-amz-content-sha256;x-amz-date,/);
+  assert.match(auth, /Signature=[0-9a-f]{64}$/);
+  assert.equal(headers.find((h) => h.key === 'x-amz-date').value, '20261023T120000Z');
+});
+
+test('aws sigv4 supports unsigned payload for bodies JS cannot hash', () => {
+  const { headers, note } = awsSigV4Sign({
+    method: 'POST', url: 'https://s3.amazonaws.com/bucket/x', bodyContent: '',
+    params: { accessKey: 'A', secretKey: 'B', region: 'us-east-1', service: 's3', unsignedPayload: true },
+    CryptoJS: libs.CryptoJS, now: new Date(0),
+  });
+  assert.equal(headers.find((h) => h.key === 'x-amz-content-sha256').value, 'UNSIGNED-PAYLOAD');
+  assert.equal(note, null);
+});
+
+test('aws sigv4 reports missing credentials', () => {
+  const r = awsSigV4Sign({ method: 'GET', url: 'https://x.example.com/', params: { accessKey: '', secretKey: '' }, CryptoJS: libs.CryptoJS });
+  assert.match(r.note, /needs an access key/);
+});
+
+test('digest challenge parses and signs', () => {
+  const ch = parseDigestChallenge('Digest realm="api@x", nonce="8d1f", qop="auth", opaque="OP", algorithm=MD5');
+  assert.equal(ch.realm, 'api@x');
+  const h1 = digestHeader({ challenge: ch, method: 'GET', url: 'https://x.example.com/p?a=b', params: { username: 'u', password: 'p' }, CryptoJS: libs.CryptoJS, clientNonce: 'deadbeef' });
+  assert.match(h1, /^Digest username="u", realm="api@x", nonce="8d1f", uri="\/p\?a=b", algorithm=MD5, qop=auth, nc=00000001, cnonce="deadbeef", response="[0-9a-f]{32}", opaque="OP"$/);
+});
+
+test('digest without qop takes the rfc2069 shape', () => {
+  const ch = parseDigestChallenge('Digest realm="r", nonce="n1"');
+  const h1 = digestHeader({ challenge: ch, method: 'POST', url: 'https://x.example.com/', params: { username: 'u', password: 'p' }, CryptoJS: libs.CryptoJS, clientNonce: 'c' });
+  assert.match(h1, /response="[0-9a-f]{32}", opaque=$|response="[0-9a-f]{32}"$/);
+  assert.ok(!h1.includes('qop='));
+});
+
+test('hawk signs the canonical request', () => {
+  const { headers, note } = hawkHeader({
+    method: 'GET', url: 'https://example.com:8080/ab?x=1',
+    params: { authId: 'dh37fgj492je', authKey: '94H8fS7h9C', algorithm: 'sha256', includePayload: 'false', nonce: 'dead' },
+    CryptoJS: libs.CryptoJS, now: new Date(1698000000000),
+  });
+  assert.equal(note, null);
+  const auth = headers[0].value;
+  assert.match(auth, /^Hawk id="dh37fgj492je", ts="\d+", nonce="dead", mac="[A-Za-z0-9+/=]+"$/);
+});
+
+test('runner flattens requests in depth-first order', () => {
+  const col = { info: { name: 'c' }, item: [
+    { name: 'first', request: { method: 'GET' } },
+    { name: 'grp', item: [
+      { name: 'inner', request: { method: 'POST' } },
+      { name: 'deep', item: [{ name: 'deepest', request: { method: 'PUT' } }] },
+    ] },
+    { name: 'last', request: { method: 'DEL' } },
+  ] };
+  const flat = flattenRequests(col, null);
+  assert.deepEqual(flat.map((f) => f.item.name), ['first', 'inner', 'deepest', 'last']);
+
+  col.item[1].id = 'f1';
+  const sub = flattenRequests(col, 'f1');
+  assert.deepEqual(sub.map((f) => f.item.name), ['inner', 'deepest']);
+  assert.equal(sub[0].parents.length, 1);
+});
+
+test('data files parse as json arrays or csv', () => {
+  assert.deepEqual(parseDataFile('[{"a":1,"b":"x"}]'), [{ a: '1', b: 'x' }]);
+  assert.deepEqual(parseDataFile('a,b\n1,x\n2,"y,z"'), [{ a: '1', b: 'x' }, { a: '2', b: 'y,z' }]);
+  assert.equal(parseDataFile('just one line'), null);
+  assert.deepEqual(parseDataFile(''), []);
+});

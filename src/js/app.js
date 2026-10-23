@@ -2,6 +2,7 @@ import { h, icon, $, dragResize, methodClass, methodLabel, toast, errText, close
 import { renderSidebar } from './ui/sidebar.js';
 import { renderRequestEditor, renderResponse } from './ui/request.js';
 import { renderContainer, renderEnvTab, renderWelcome, renderEmpty, openSettings, applyTheme, envQuickLook } from './ui/panels.js';
+import { renderRunner } from './ui/runner.js';
 import * as S from './store.js';
 import { state, on } from './store.js';
 import * as C from './ctx.js';
@@ -28,7 +29,8 @@ function renderTabs() {
         { label: 'Duplicate tab', onClick: () => C.openDraft(S.clone({ ...t.draft, id: crypto.randomUUID(), name: `${t.draft.name} Copy` })) },
       ]); },
     },
-      t.kind === 'request' ? h('span', { class: ['method', methodClass(m)] }, methodLabel(m)) : icon(t.kind === 'container' ? (t.ref.item ? 'folder' : 'box') : 'globe', 'ico'),
+      t.kind === 'request' ? h('span', { class: ['method', methodClass(m)] }, methodLabel(m))
+      : icon(t.kind === 'runner' ? 'play' : t.kind === 'container' ? (t.ref.item ? 'folder' : 'box') : 'globe', 'ico'),
       h('span', { class: 'title' }, C.tabTitle(t)),
       h('button', { class: 'close', title: 'Close', onclick: (e) => { e.stopPropagation(); C.closeTab(t.id); } }, icon('x')));
     return el;
@@ -84,6 +86,10 @@ function renderMain() {
     const el = h('section', { id: 'editor', style: { flex: '1' } });
     workspaceEl.replaceChildren(el);
     renderEnvTab(el, t);
+  } else if (t.kind === 'runner') {
+    const el = h('section', { id: 'editor', style: { flex: '1' } });
+    workspaceEl.replaceChildren(el);
+    renderRunner(el, t);
   }
 }
 

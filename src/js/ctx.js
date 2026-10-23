@@ -79,6 +79,12 @@ export function openGlobals() {
   addTab({ kind: 'globals', ref: {}, draft: { name: 'Globals', values: clone(state.ws.globals.values || []) } });
 }
 
+export function openRunner(entry, folderId = null) {
+  const existing = findTab((t) => t.kind === 'runner' && t.ref?.col === entry.uid && (t.ref?.item ?? null) === (folderId ?? null));
+  if (existing) return focusTab(existing.id);
+  addTab({ kind: 'runner', ref: { col: entry.uid, item: folderId }, draft: { name: 'Runner' } });
+}
+
 export async function closeTab(id, { force = false } = {}) {
   const t = state.tabs.find((x) => x.id === id);
   if (!t) return;

@@ -4,6 +4,8 @@ import { clone, urlObject, getScript, effectiveAuth, authParam } from './model.j
 import { Resolver } from './vars.js';
 import { runScript } from './scripts.js';
 import { stripJsonComments } from './jsonc.js';
+import { awsSigV4Sign, hawkHeader, digestHeader, parseDigestChallenge } from './authsign.js';
+import { transportFor } from './transport.js';
 
 const RAW_TYPES = {
   json: 'application/json',
@@ -32,16 +34,7 @@ export function buildOutgoing(req, auth, resolver, settings) {
   const hasHeader = (k) => headers.some((h) => h.key.toLowerCase() === k.toLowerCase());
   const queryAdd = [];
 
-  // Auth
-  const applied = applyAuth(auth, R);
-  for (const h of applied.headers) if (!hasHeader(h.key)) headers.push(h);
-  queryAdd.push(...applied.query);
-  if (queryAdd.length) {
-    const qs = queryAdd.map((q) => `${encodeURIComponent(q.key)}=${encodeURIComponent(q.value)}`).join('&');
-    url += (url.includes('?') ? '&' : '?') + qs;
-  }
-
-  // Body
+  // Body (built before auth so signers can hash the resolved content)
   let body = { mode: 'none' };
   const b = req.body;
   const method = (req.method || 'GET').toUpperCase();
@@ -73,6 +66,18 @@ export function buildOutgoing(req, auth, resolver, settings) {
       body = { mode: 'file', path: b.file.src };
     }
   }
+
+  // Auth (signers get the resolved URL, method and exact body content)
+  const bodyContent = body.mode === 'raw' ? body.content : body.mode === 'urlencoded'
+    ? body.fields.map((f) => `${encodeURIComponent(f.key)}=${encodeURIComponent(f.value)}`).join('&')
+    : body.mode === 'file' ? '\u0000file' : '';
+  const applied = applyAuth(auth, R, { url, method, bodyContent, contentType: headers.find((h) => h.key.toLowerCase() === 'content-type')?.value || '' });
+  for (const h of applied.headers) if (!hasHeader(h.key)) headers.push(h);
+  queryAdd.push(...applied.query);
+  if (queryAdd.length) {
+    const qs = queryAdd.map((q) => `${encodeURIComponent(q.key)}=${encodeURIComponent(q.value)}`).join('&');
+    url += (url.includes('?') ? '&' : '?') + qs;
+  }
   if (!hasHeader('accept')) headers.push({ key: 'Accept', value: '*/*' });
 
   const ppb = req._protocolProfileBehavior || {};
@@ -91,10 +96,16 @@ export function buildOutgoing(req, auth, resolver, settings) {
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-export function applyAuth(auth, R) {
+export function applyAuth(auth, R, ctx = {}) {
   const out = { headers: [], query: [], note: null };
   if (!auth || auth.type === 'noauth' || auth.type === 'inherit') return out;
   const p = (k) => R(authParam(auth, k) ?? '');
+  const params = auth[auth.type];
+  // Raw (array or object) params, without variable resolution.
+  const pv = (k) => {
+    if (Array.isArray(params)) return (params.find((x) => x.key === k) || {}).value;
+    return params?.[k];
+  };
   switch (auth.type) {
     case 'bearer': {
       const t = p('token');
@@ -118,10 +129,62 @@ export function applyAuth(auth, R) {
       else out.headers.push({ key: 'Authorization', value: `${p('headerPrefix') || 'Bearer'} ${token}`.trim() });
       break;
     }
+    case 'awsSigV4': {
+      const cryptoLib = globalThis.CryptoJS || ctx.CryptoJS;
+      if (!cryptoLib) { out.note = 'CryptoJS library is not loaded for AWS signing.'; break; }
+      const signed = awsSigV4Sign({ method: ctx.method ?? 'GET', url: ctx.url ?? '', bodyContent: ctx.bodyContent ?? '',
+        params: { accessKey: p('accessKey'), secretKey: p('secretKey'), region: p('region'), service: p('service'), sessionToken: p('sessionToken'),
+          unsignedPayload: ctx.bodyContent === '\u0000file' || pv('unsignedPayload') === 'true' }, CryptoJS: cryptoLib });
+      if (signed.note) { out.note = signed.note; break; }
+      out.headers.push(...signed.headers);
+      break;
+    }
+    case 'hawk': {
+      const cryptoLib = globalThis.CryptoJS || ctx.CryptoJS;
+      if (!cryptoLib) { out.note = 'CryptoJS library is not loaded for Hawk signing.'; break; }
+      const signed = hawkHeader({ method: ctx.method ?? 'GET', url: ctx.url ?? '', bodyContent: ctx.bodyContent ?? '',
+        params: { authId: pv('authId') ?? pv('id'), authKey: pv('authKey') ?? pv('key'), algorithm: pv('algorithm'), user: pv('user'),
+          nonce: pv('nonce'), extraData: pv('extraData'), app: pv('app'), dlg: pv('dlg'),
+          includePayload: pv('includePayload') ?? pv('includePayloadTimestamp') }, CryptoJS: cryptoLib });
+      if (signed.note) { out.note = signed.note; break; }
+      out.headers.push(...signed.headers);
+      break;
+    }
+    case 'digest': {
+      // Needs the server's nonce, which arrives as a 401 challenge; the send
+      // pipeline retries once with the computed header (see execute()).
+      if (!authParam(auth, 'username') || !authParam(auth, 'password')) {
+        out.note = 'Digest auth has no username or password yet.';
+        break;
+      }
+      if (authParam(auth, 'nonce')) { // pre-provided nonce: sign without a challenge
+        const header = digestHeader({
+          challenge: { realm: authParam(auth, 'realm'), nonce: authParam(auth, 'nonce'), qop: authParam(auth, 'qop'), algorithm: authParam(auth, 'algorithm'), opaque: authParam(auth, 'opaque') },
+          method: ctx.method ?? 'GET', url: ctx.url ?? '',
+          params: { username: authParam(auth, 'username'), password: authParam(auth, 'password'), nonceCount: authParam(auth, 'nonceCount'), clientNonce: authParam(auth, 'clientNonce') },
+          CryptoJS: globalThis.CryptoJS || ctx.CryptoJS,
+        });
+        if (header) out.headers.push({ key: 'Authorization', value: header });
+        else out.note = 'Digest auth is configured but has no usable nonce.';
+      }
+      break;
+    }
     default:
       out.note = `"${auth.type}" auth isn't supported in Dispatch yet, so this request was sent without it.`;
   }
   return out;
+}
+
+/** Compute the Digest Authorization header to retry a 401-digest challenge with. */
+export function digestRetry(auth, outgoing, wwwAuth, CryptoJS) {
+  const p = (k) => authParam(auth, k) ?? '';
+  const challenge = parseDigestChallenge(wwwAuth);
+  return digestHeader({
+    challenge,
+    method: outgoing.method, url: outgoing.url,
+    params: { username: p('username'), password: p('password'), nonceCount: p('nonceCount'), clientNonce: p('clientNonce'), algorithm: p('algorithm') },
+    CryptoJS,
+  });
 }
 
 /**
@@ -185,10 +248,15 @@ export async function execute({ item, parents, collection, scopes, settings, sen
 
   const { auth } = effectiveAuth(req, parents, collection);
   const outgoing = buildOutgoing(req, auth, resolver, settings);
-  const authNote = applyAuth(auth, (s) => resolver.replace(s)).note;
+  const authNote = applyAuth(auth, (s) => resolver.replace(s), { url: outgoing.url, method: outgoing.method, bodyContent: outgoing.body.mode === 'raw' ? outgoing.body.content : outgoing.body.mode === 'urlencoded' ? outgoing.body.fields.map((f) => `${f.key}=${f.value}`).join('&') : outgoing.body.mode === 'file' ? '\u0000file' : '' }).note;
   if (authNote) out.notes.push(authNote);
   const missing = new Set([...resolver.unresolved(urlObject(req.url).raw), ...(req.header || []).filter((h) => !h.disabled).flatMap((h) => resolver.unresolved(h.value))]);
   if (missing.size) out.notes.push(`Unresolved variables: ${[...missing].map((m) => `{{${m}}}`).join(', ')}`);
+  try {
+    const transport = await transportFor(outgoing.url).catch(() => ({}));
+    if (transport.proxyUrl) outgoing.settings.proxyUrl = transport.proxyUrl;
+    if (transport.clientCert) outgoing.settings.clientCert = transport.clientCert;
+  } catch { /* transport config is optional */ }
   out.outgoing = outgoing;
 
   try {
@@ -196,6 +264,23 @@ export async function execute({ item, parents, collection, scopes, settings, sen
   } catch (e) {
     out.error = String(e?.message || e);
     return out;
+  }
+
+  // Digest challenge-response: one automatic retry on the server's 401 challenge.
+  const www = out.response?.headers?.find((h) => (h.key || '').toLowerCase() === 'www-authenticate')?.value || '';
+  if (auth?.type === 'digest' && authParam(auth, 'username') && authParam(auth, 'password') && out.response?.status === 401 && /^digest/i.test(www)) {
+    const CryptoJS = globalThis.CryptoJS || libs?.CryptoJS;
+    const header = digestRetry(auth, outgoing, www, CryptoJS);
+    if (header) {
+      const retry = { ...outgoing, headers: [...outgoing.headers.filter((h) => (h.key || '').toLowerCase() !== 'authorization'), { key: 'Authorization', value: header }] };
+      try {
+        out.response = await send(retry);
+        out.notes.push('Sent again with the Digest challenge response from the server.');
+      } catch (e) {
+        out.error = String(e?.message || e);
+        return out;
+      }
+    }
   }
 
   for (const target of chain) {

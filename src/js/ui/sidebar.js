@@ -94,7 +94,7 @@ function newMenu(e) {
 }
 
 async function newCollection() {
-  const name = await promptDialog({ title: 'New collection', label: S.isCloud() ? `It will be created in "${state.ws.name}" in Postman.` : 'It will be stored on this Mac only.', value: 'New Collection' });
+  const name = await promptDialog({ title: 'New collection', label: S.isCloud() ? `It will be created in "${state.ws.name}" in Postman.` : 'It will be stored on this device only.', value: 'New Collection' });
   if (!name) return;
   try { const entry = await S.createCollection(name); C.toggleExpanded(entry.uid, true); sideTab = 'collections'; } catch (e) { toast(errText(e), { error: true }); }
 }
@@ -114,7 +114,7 @@ function collectionsView() {
   if (!cols.length) {
     return [h('div', { class: 'side-empty' },
       h('div', { style: { fontWeight: 600, color: 'var(--text)' } }, 'No collections yet'),
-      h('p', null, S.isCloud() ? (state.syncing ? 'Loading from Postman…' : 'Create one, or import a Postman export.') : 'Collections here stay on this Mac.'),
+      h('p', null, S.isCloud() ? (state.syncing ? 'Loading from Postman…' : 'Create one, or import a Postman export.') : 'Collections here stay on this device.'),
       h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn sm', onclick: newCollection }, 'New collection'), h('button', { class: 'btn sm', onclick: doImport }, 'Import')))];
   }
   const open = C.expanded();
@@ -161,6 +161,7 @@ function colMenu(e, entry, row) {
     { label: 'Add request', icon: 'plus', onClick: () => C.addRequest(entry) },
     { label: 'Add folder', icon: 'folder', onClick: async () => { const n = await promptDialog({ title: 'New folder', value: 'New Folder' }); if (n) C.addFolder(entry, null, n); } },
     { label: 'Settings, auth & variables', icon: 'gear', onClick: () => C.openContainer(entry) },
+    { label: 'Run collection', icon: 'play', onClick: () => C.openRunner(entry, null) },
     '-',
     { label: 'Rename', icon: 'edit', onClick: async () => { await S.ensureCollection(entry); const n = await promptDialog({ title: 'Rename collection', value: entry.name, confirm: 'Rename' }); if (n) C.renameItem(entry, null, n); } },
     { label: 'Export…', icon: 'upload', onClick: async () => { try { const p = await S.exportCollection(entry); if (p) toast(`Exported to ${p}`); } catch (er) { toast(errText(er), { error: true }); } } },
@@ -172,7 +173,7 @@ function colMenu(e, entry, row) {
     } } : null,
     !S.isCloud() || entry.deletedRemotely ? '-' : null,
     !S.isCloud() || entry.deletedRemotely ? { label: 'Remove from Dispatch', icon: 'trash', danger: true, onClick: async () => {
-      if (await confirmDialog({ title: `Remove "${entry.name}"?`, message: 'It will be deleted from this Mac. Export it first if you want a copy.', confirm: 'Remove', danger: true })) S.removeLocalCollection(entry);
+      if (await confirmDialog({ title: `Remove "${entry.name}"?`, message: 'It will be deleted from this device. Export it first if you want a copy.', confirm: 'Remove', danger: true })) S.removeLocalCollection(entry);
     } } : null,
   ].filter((x, i, a) => x !== null && !(x === '-' && (a[i - 1] === '-' || i === a.length - 1))), row);
 }
@@ -225,6 +226,7 @@ function folderMenu(e, entry, it, row) {
     { label: 'Add request', icon: 'plus', onClick: () => C.addRequest(entry, it.id) },
     { label: 'Add folder', icon: 'folder', onClick: async () => { const n = await promptDialog({ title: 'New folder', value: 'New Folder' }); if (n) C.addFolder(entry, it.id, n); } },
     { label: 'Folder settings & auth', icon: 'gear', onClick: () => C.openContainer(entry, it.id) },
+    { label: 'Run folder', icon: 'play', onClick: () => C.openRunner(entry, it.id) },
     '-',
     { label: 'Rename', icon: 'edit', onClick: async () => { const n = await promptDialog({ title: 'Rename folder', value: it.name, confirm: 'Rename' }); if (n) C.renameItem(entry, it.id, n); } },
     { label: 'Duplicate', icon: 'copy', onClick: () => C.duplicate(entry, it.id) },

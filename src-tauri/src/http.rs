@@ -45,6 +45,21 @@ pub struct Settings {
     pub follow_redirects: bool,
     #[serde(default = "yes")]
     pub verify_ssl: bool,
+    /// Full proxy URL; userinfo in the URL is used for proxy auth.
+    #[serde(default)]
+    pub proxy_url: Option<String>,
+    /// Client certificate (PKCS#12/PFX or PEM with key) presented over TLS.
+    #[serde(default)]
+    pub client_cert: Option<ClientCert>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCert {
+    /// Path to a .pfx/.p12 or a PEM file (cert and key concatenated).
+    pub path: String,
+    #[serde(default)]
+    pub password: String,
 }
 
 fn default_timeout() -> u64 {
@@ -56,7 +71,7 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { timeout_ms: default_timeout(), follow_redirects: true, verify_ssl: true }
+        Settings { timeout_ms: default_timeout(), follow_redirects: true, verify_ssl: true, proxy_url: None, client_cert: None }
     }
 }
 
@@ -118,13 +133,33 @@ pub async fn send(state: &HttpState, req: OutgoingRequest) -> Result<IncomingRes
     } else {
         reqwest::redirect::Policy::none()
     };
-    let client = reqwest::Client::builder()
+    let mut client = reqwest::Client::builder()
         .cookie_provider(state.jar())
         .redirect(redirect)
         .danger_accept_invalid_certs(!settings.verify_ssl)
         .timeout(Duration::from_millis(settings.timeout_ms.max(1)))
         .user_agent(USER_AGENT)
-        .build()
+        // native-tls (schannel on Windows, openssl on Linux, Security on macOS)
+        // so client certificates work on all three platforms.
+        .use_native_tls();
+    if let Some(proxy_url) = settings.proxy_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| format!("Bad proxy URL: {e}"))?;
+        client = client.proxy(proxy);
+    }
+    if let Some(cert) = &settings.client_cert {
+        let bytes = read_cert_file(cert).await?;
+        let identity = if cert.path.to_ascii_lowercase().ends_with(".p12") || cert.path.to_ascii_lowercase().ends_with(".pfx") {
+            reqwest::Identity::from_pkcs12_der(&bytes, &cert.password)
+                .map_err(|e| format!("Couldn't load the .pfx/.p12 certificate (wrong password?): {e}"))?
+        } else {
+            let (certs, key) = split_pem(&String::from_utf8_lossy(&bytes))
+                .ok_or_else(|| "The PEM file must contain the certificate(s) and a private key.".to_string())?;
+            reqwest::Identity::from_pkcs8_pem(certs.as_bytes(), key.as_bytes())
+                .map_err(|e| format!("Couldn't load the PEM certificate ({e})"))?
+        };
+        client = client.identity(identity);
+    }
+    let client = client.build()
         .map_err(|e| format!("Could not set up the HTTP client: {e}"))?;
 
     let method = reqwest::Method::from_bytes(req.method.trim().to_uppercase().as_bytes())
@@ -226,6 +261,53 @@ pub async fn send(state: &HttpState, req: OutgoingRequest) -> Result<IncomingRes
         size,
         time_ms,
     })
+}
+
+/// Splits a PEM file into its certificate blocks and its private-key block.
+/// Accepts PKCS#8 ("PRIVATE KEY") and legacy PKCS#1 ("RSA PRIVATE KEY") keys.
+fn split_pem(text: &str) -> Option<(String, String)> {
+    let mut certs = Vec::new();
+    let mut key = None;
+    let mut block: Option<(String, String)> = None; // (label, body)
+    let mut finish = |b: &mut Option<(String, String)>| {
+        if let Some((label, body)) = b.take() {
+            let full = format!("-----BEGIN {label}-----\n{body}-----END {label}-----\n");
+            if label.contains("CERTIFICATE") {
+                certs.push(full);
+            } else if label.contains("PRIVATE KEY") {
+                key = Some(full);
+            }
+        }
+    };
+    for line in text.lines() {
+        let trim = line.trim();
+        if let Some(rest) = trim.strip_prefix("-----BEGIN ") {
+            if let Some(label) = rest.strip_suffix("-----") {
+                finish(&mut block);
+                block = Some((label.to_string(), String::new()));
+            }
+        } else if trim.starts_with("-----END ") {
+            finish(&mut block);
+        } else if let Some((_, body)) = block.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    finish(&mut block);
+    if certs.is_empty() || key.is_none() {
+        return None;
+    }
+    Some((certs.concat(), key.unwrap()))
+}
+
+/// Reads a client certificate file (PKCS#12 .pfx/.p12, or PEM with cert + key).
+async fn read_cert_file(cert: &ClientCert) -> Result<Vec<u8>, String> {
+    if cert.path.is_empty() {
+        return Err("Pick a client certificate file or clear the field.".into());
+    }
+    tokio::fs::read(&cert.path)
+        .await
+        .map_err(|e| format!("Couldn't read the certificate file ({0}): {e}", cert.path))
 }
 
 /// Accept "example.com/x" the way Postman does, by assuming http://.
@@ -374,5 +456,34 @@ mod tests {
     fn url_without_scheme_gets_http() {
         assert_eq!(normalise_url("example.com/a").unwrap().as_str(), "http://example.com/a");
         assert_eq!(normalise_url(" https://x.io ").unwrap().as_str(), "https://x.io/");
+    }
+}
+
+#[cfg(test)]
+mod pem_tests {
+    use super::split_pem;
+
+    #[test]
+    fn splits_certificate_chain_and_key() {
+        let text = "extra text\n-----BEGIN CERTIFICATE-----\nAAA\nBBB\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nCCC\n-----END CERTIFICATE-----\nnoise\n-----BEGIN PRIVATE KEY-----\nKKK\n-----END PRIVATE KEY-----\ntrailing\n";
+        let (certs, key) = split_pem(text).unwrap();
+        assert!(certs.contains("AAA") && certs.contains("CCC"));
+        assert_eq!(certs.matches("-----BEGIN").count(), 2);
+        assert!(key.contains("KKK"));
+    }
+
+    #[test]
+    fn accepts_legacy_rsa_key_blocks() {
+        let text = "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n-----BEGIN RSA PRIVATE KEY-----\nRRR\n-----END RSA PRIVATE KEY-----\n";
+        let (_, key) = split_pem(text).unwrap();
+        assert!(key.contains("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(key.contains("RRR"));
+    }
+
+    #[test]
+    fn rejects_files_without_key_or_cert() {
+        assert!(split_pem("-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n").is_none());
+        assert!(split_pem("-----BEGIN RSA PRIVATE KEY-----\nRRR\n-----END RSA PRIVATE KEY-----\n").is_none());
+        assert!(split_pem("nothing here").is_none());
     }
 }
