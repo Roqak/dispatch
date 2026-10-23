@@ -5,17 +5,28 @@ const tauri = globalThis.__TAURI__?.core;
 export const isDesktop = !!tauri;
 
 const invoke = (cmd, args) => tauri.invoke(cmd, args);
-// Set from settings by the store; 'us' (default) or 'eu'.
-export const region = { value: 'us' };
+const mock = isDesktop ? null : await import('./mock.js');
+// Which profile cloud calls run as, and its region. Kept in sync by the store;
+// callCtx.profileId is null for the local profile (Postman is never called).
+export const callCtx = isDesktop ? { profileId: null, region: 'us' } : mock.mockCtx;
+
+// Legacy single-region handle kept for callers that read/write region.value;
+// it maps onto the active profile's region through callCtx.
+export const region = {
+  get value() { return callCtx.region; },
+  set value(v) { callCtx.region = v === 'eu' ? 'eu' : 'us'; },
+};
 
 export const bridge = isDesktop
   ? {
       send: (request) => invoke('send_request', { request }),
       clearCookies: () => invoke('clear_cookies'),
-      postman: (method, path, body) => invoke('postman_api', { method, path, body: body ?? null, region: region.value }),
-      setApiKey: (key) => invoke('set_api_key', { key, region: region.value }),
-      hasApiKey: () => invoke('has_api_key'),
-      deleteApiKey: () => invoke('delete_api_key'),
+      postman: (method, path, body) => invoke('postman_api', { method, path, body: body ?? null, profileId: callCtx.profileId ?? '', region: callCtx.region }),
+      setApiKey: (key, profileId, region) => invoke('set_api_key', { key, profileId, region }),
+      hasApiKey: (profileId) => invoke('has_api_key', { profileId }),
+      deleteApiKey: (profileId) => invoke('delete_api_key', { profileId }),
+      hasLegacyKey: () => invoke('has_legacy_api_key'),
+      migrateLegacyKey: (profileId) => invoke('migrate_legacy_key', { profileId }),
       read: (name) => invoke('store_read', { name }),
       write: (name, value) => invoke('store_write', { name, value }),
       openTextFile: () => invoke('open_text_file'),
@@ -23,6 +34,6 @@ export const bridge = isDesktop
       saveTextFile: (defaultName, content) => invoke('save_text_file', { defaultName, content }),
       saveBinaryFile: (defaultName, base64Content) => invoke('save_binary_file', { defaultName, base64Content }),
     }
-  : (await import('./mock.js')).mockBridge;
+  : mock.mockBridge;
 
 if (!isDesktop) globalThis.__dispatchMock = bridge;

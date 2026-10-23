@@ -1,10 +1,10 @@
-import { h, icon, modal, toast, errText, logoSvg, relTime, confirmDialog, promptDialog } from './dom.js';
+import { h, icon, modal, toast, errText, logoSvg, relTime, confirmDialog, promptDialog, showMenu } from './dom.js';
 import { varInput, subtabs } from './components.js';
 import { authEditor, scriptsEditor } from './request.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
 import { state, emit } from '../store.js';
-import { bridge, isDesktop } from '../bridge.js';
+import { bridge } from '../bridge.js';
 import { isFolder, itemId } from '../model.js';
 import { callsRemaining } from '../sync.js';
 
@@ -162,34 +162,73 @@ export function saveAsDialog(defaultName) {
 
 // ---------- settings ----------
 
+/** Shared "connect another Postman account" dialog. Resolves with the new profile. */
+export function addProfileDialog(then) {
+  const body = h('div');
+  const render = () => {
+    const keyInput = h('input', { class: 'input', type: 'password', placeholder: 'PMAK-…', style: { width: '100%' } });
+    const nameInput = h('input', { class: 'input', placeholder: 'Name (optional — defaults to the Postman username)', style: { width: '100%' } });
+    const errLine = h('div', { class: 'hint', style: { color: 'var(--err)', minHeight: '18px', margin: '6px 0 0' } });
+    const eu = h('input', { type: 'checkbox' });
+    const connectBtn = h('button', { class: 'btn primary', onclick: async () => {
+      connectBtn.disabled = true; connectBtn.textContent = 'Checking…'; errLine.textContent = '';
+      try {
+        const profile = await S.addProfile({ key: keyInput.value, name: nameInput.value, region: eu.checked ? 'eu' : 'us' });
+        toast(`Connected "${profile.name}"`);
+        render();
+        then?.(profile);
+      } catch (e) { errLine.textContent = errText(e); connectBtn.disabled = false; connectBtn.textContent = 'Connect'; }
+    } }, 'Connect');
+    keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn.click(); });
+    body.replaceChildren(
+      h('p', null, 'Paste a Postman API key to add the account as a profile. Each profile syncs its own workspaces, collections and environments — switch any time from the sidebar footer.'),
+      h('div', { class: 'form-grid' },
+        h('label', null, 'Profile name'), nameInput,
+        h('label', null, 'API key'), h('div', { class: 'row' }, keyInput, connectBtn),
+        h('label', null, 'Region'), h('div', null, h('label', { class: 'check hint', style: { margin: 0 } }, eu, ' My Postman team is hosted in the EU region'))),
+      errLine,
+      h('p', { class: 'hint' }, 'In Postman: click your avatar → Settings → API keys → Generate API key.'));
+    setTimeout(() => keyInput.focus(), 50);
+  };
+  render();
+  modal({ title: 'Add Postman profile', body, wide: true });
+}
+
 export function openSettings() {
   const s = state.settings;
   const body = h('div');
   const render = () => {
-    const keyInput = h('input', { class: 'input', type: 'password', placeholder: 'PMAK-…', style: { width: '100%' } });
-    const errLine = h('div', { class: 'hint', style: { color: 'var(--err)', minHeight: '18px', margin: '6px 0 0' } });
-    const connectBtn = h('button', { class: 'btn primary', onclick: async () => {
-      connectBtn.disabled = true; connectBtn.textContent = 'Checking…'; errLine.textContent = '';
-      try { await S.connectAccount(keyInput.value); toast('Connected to Postman'); render(); } catch (e) { errLine.textContent = errText(e); connectBtn.disabled = false; connectBtn.textContent = 'Connect'; }
-    } }, 'Connect');
-    const account = state.hasKey
-      ? h('div', null,
-        h('div', { class: 'row' }, h('div', { class: 'avatar' }, (state.account?.fullName || state.account?.username || '?').slice(0, 1).toUpperCase()),
-          h('div', { class: 'grow' }, h('div', { style: { fontWeight: 600 } }, state.account?.fullName || state.account?.username || 'Connected'), h('div', { class: 'muted', style: { fontSize: '12px' } }, state.account?.email || '')),
-          h('button', { class: 'btn sm danger', onclick: async () => { if (await confirmDialog({ title: 'Disconnect Postman?', message: 'Your API key is removed from this Mac. Collections already downloaded stay here, but stop syncing until you reconnect.', confirm: 'Disconnect', danger: true })) { await S.disconnectAccount(); render(); } } }, icon('logout'), 'Disconnect')),
-        h('p', { class: 'hint' }, `Your API key is stored in ${isDesktop ? 'the macOS Keychain' : 'this browser'}.`, callsRemaining != null ? ` Postman API calls left this month: ${callsRemaining.toLocaleString()}.` : ''))
-      : h('div', null,
-        h('p', null, 'Paste a Postman API key to sync your workspaces, collections and environments.'),
-        h('div', { class: 'row' }, keyInput, connectBtn), errLine,
-        h('p', { class: 'hint' }, 'In Postman: click your avatar → Settings → API keys → Generate API key.'),
-        regionPicker());
-    keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn.click(); });
+    const profileRows = state.profiles.map((p) => {
+      const acc = state.accounts[p.id];
+      const who = acc?.fullName || acc?.username;
+      const active = p.id === s.activeProfileId;
+      const menu = (e) => showMenu(e, [
+        { label: 'Rename…', icon: 'edit', onClick: async () => { const n = await promptDialog({ title: 'Rename profile', value: p.name }); if (n) { await S.renameProfile(p.id, n); render(); } } },
+        p.kind === 'postman' && { label: `Region: switch to ${p.region === 'eu' ? 'US' : 'EU'}`, icon: 'globe', onClick: async () => { await S.setProfileRegion(p.id, p.region === 'eu' ? 'us' : 'eu'); render(); } },
+        p.kind === 'postman' && { label: 'Disconnect and remove key', icon: 'logout', onClick: async () => {
+          if (await confirmDialog({ title: `Disconnect "${p.name}"?`, message: 'Your API key is removed from this device. Collections already downloaded stay here, but stop syncing until you reconnect.', confirm: 'Disconnect', danger: true })) { await S.removeProfile(p.id); render(); }
+        } },
+      ].filter(Boolean));
+      return h('div', { class: 'row', style: { padding: '6px 0' } },
+        h('div', { class: 'avatar', title: acc?.email || '' }, (acc?.fullName || acc?.username || p.name).slice(0, 1).toUpperCase()),
+        h('div', { class: 'grow' },
+          h('div', { style: { fontWeight: active ? 600 : 400 } }, p.name, active ? h('span', { class: 'muted', style: { fontWeight: 400 } }, ' · active') : null),
+          h('div', { class: 'muted', style: { fontSize: '12px' } },
+            p.kind === 'local' ? 'This device — requests and collections stay here' : `${who || 'Postman'}${p.region === 'eu' ? ' · EU region' : ''}`)),
+        !active && h('button', { class: 'btn sm', onclick: () => S.switchProfile(p.id).catch((e) => toast(errText(e), { error: true })) }, 'Switch'),
+        p.kind === 'postman' && h('button', { class: 'icon-btn sm', title: 'Profile actions', onclick: menu }, icon('more')));
+    });
 
     const num = (key, min, max) => h('input', { class: 'input', type: 'number', min, max, value: s[key], style: { width: '120px' }, oninput: (e) => { s[key] = Math.max(min, Math.min(max, Number(e.target.value) || min)); S.saveSettings(); } });
     const toggle = (key) => h('input', { type: 'checkbox', checked: s[key], onchange: (e) => { s[key] = e.target.checked; S.saveSettings(); } });
 
     body.replaceChildren(
-      h('div', { class: 'settings-section' }, h('h3', null, 'Postman account'), account),
+      h('div', { class: 'settings-section' },
+        h('h3', null, 'Profiles'),
+        profileRows,
+        h('div', { class: 'row', style: { marginTop: '10px' } },
+          h('button', { class: 'btn', onclick: () => addProfileDialog(() => render()) }, icon('plus'), 'Add Postman profile'),
+          h('span', { class: 'hint', style: { margin: 0 } }, 'The active profile decides which Postman account syncs and which API calls run against.'))),
       h('div', { class: 'settings-section' }, h('h3', null, 'Syncing'),
         h('div', { class: 'form-grid' },
           h('label', null, 'When you save'),
@@ -209,6 +248,7 @@ export function openSettings() {
           h('select', { class: 'select', onchange: (e) => { s.theme = e.target.value; S.saveSettings(); applyTheme(); } },
             [['system', 'Match system'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) => h('option', { value: v, selected: s.theme === v }, l))))),
     );
+    if (callsRemaining != null) body.prepend(h('p', { class: 'hint' }, `Postman API calls left this month: ${callsRemaining.toLocaleString()}.`));
   };
   render();
   modal({ title: 'Settings', body, wide: true });
@@ -220,35 +260,36 @@ export function applyTheme() {
   else delete document.documentElement.dataset.theme;
 }
 
-function regionPicker() {
-  return h('label', { class: 'check hint', style: { marginTop: '4px' } },
-    h('input', { type: 'checkbox', checked: state.settings.region === 'eu', onchange: (e) => { state.settings.region = e.target.checked ? 'eu' : 'us'; S.saveSettings(); } }),
-    'My Postman team is hosted in the EU region');
-}
-
 // ---------- welcome & empty ----------
 
 export function renderWelcome(root) {
   const keyInput = h('input', { class: 'input grow', type: 'password', placeholder: 'Paste your Postman API key (PMAK-…)' });
+  const nameInput = h('input', { class: 'input grow', placeholder: 'Profile name (optional — defaults to the Postman username)' });
   const err = h('div', { class: 'err-text' });
   const btn = h('button', { class: 'btn primary', onclick: async () => {
     btn.disabled = true; btn.textContent = 'Connecting…'; err.textContent = '';
-    try { await S.connectAccount(keyInput.value); toast('Connected. Your workspaces are syncing.'); emit('all'); }
+    try {
+      const profile = await S.addProfile({ key: keyInput.value, name: nameInput.value, region: state.settings.region === 'eu' ? 'eu' : 'us' });
+      toast(`Connected. "${profile.name}" profiles are syncing.`);
+      emit('all');
+    }
     catch (e) { err.textContent = errText(e); btn.disabled = false; btn.textContent = 'Connect'; }
   } }, 'Connect');
   keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') btn.click(); });
   root.replaceChildren(h('div', { class: 'center-screen' }, h('div', { class: 'welcome' },
     logoSvg(),
     h('h1', null, 'Connect your Postman account'),
-    h('p', { class: 'lead' }, 'Dispatch syncs your workspaces, collections and environments through Postman\'s official API, so your team keeps working in Postman while you use something lighter.'),
+    h('p', { class: 'lead' }, 'Dispatch syncs your workspaces, collections and environments through Postman\'s official API, so your team keeps working in Postman while you use something lighter. You can also work entirely on this device — add accounts later, and switch between them any time.'),
     h('ol', null,
       h('li', null, 'In Postman, click your avatar → ', h('b', null, 'Settings'), ' → ', h('b', null, 'API keys'), '.'),
       h('li', null, 'Click ', h('b', null, 'Generate API key'), ', name it "Dispatch", and copy it.'),
-      h('li', null, 'Paste it below. It\'s stored in your macOS Keychain.')),
+      h('li', null, 'Paste it below. Each account you add becomes a profile with its own key.')),
+    h('div', { class: 'row', style: { marginBottom: '6px' } }, nameInput),
     h('div', { class: 'row' }, keyInput, btn),
     err,
-    regionPicker(),
-    h('div', { class: 'row', style: { marginTop: '18px' } }, h('button', { class: 'btn ghost', onclick: () => { state.settings.onboarded = true; S.saveSettings(); emit('all'); } }, 'Skip and work locally')))));
+    h('div', { class: 'row', style: { marginTop: '18px' } },
+      h('button', { class: 'btn ghost', onclick: () => { state.settings.onboarded = true; S.saveSettings(); emit('all'); } }, 'Start on this device, without Postman'),
+      h('button', { class: 'btn ghost', onclick: () => addProfileDialog(() => { state.settings.onboarded = true; S.saveSettings(); emit('all'); }) }, 'Add another account')))));
   setTimeout(() => keyInput.focus(), 50);
 }
 
@@ -256,7 +297,7 @@ export function renderEmpty(root) {
   root.replaceChildren(h('div', { class: 'center-screen' }, h('div', { class: 'empty-main' },
     logoSvg(),
     h('h2', null, state.ws?.collections.length ? 'Open a request from the sidebar' : 'Nothing open'),
-    h('div', null, S.isCloud() ? `Workspace: ${state.ws.name}` : 'Local workspace on this Mac'),
+    h('div', null, S.isCloud() ? `Workspace: ${state.ws.name}` : 'Local workspace on this device'),
     h('div', { class: 'row' },
       h('button', { class: 'btn primary', onclick: () => C.openDraft() }, icon('plus'), 'New request'),
       h('button', { class: 'btn', onclick: async () => { try { const r = await S.importFromFile(); if (r) toast(`Imported "${r.name}"`); } catch (e) { toast(errText(e), { error: true }); } } }, icon('download'), 'Import')),

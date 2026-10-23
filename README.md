@@ -1,6 +1,6 @@
 # Dispatch
 
-A lightweight API client for macOS that works with your existing Postman account. It reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something smaller.
+A lightweight API client that works with your existing Postman account. It reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something smaller — and it runs entirely on this device without a Postman account too.
 
 The app is a native Tauri build. The release binary is about 6 MB, compared with several hundred MB for the Postman desktop app.
 
@@ -10,7 +10,7 @@ The app is a native Tauri build. The release binary is about 6 MB, compared with
 - **Conflict detection.** If a collection changed in Postman after you last synced, Dispatch asks before saving: overwrite with your version, or load theirs. Loading theirs keeps your edits in your open tabs so you can re-apply them.
 - **Requests.** All common methods, query and path parameters, headers, and bodies as raw text/JSON/XML/HTML, form-data (including file uploads), x-www-form-urlencoded, binary files and GraphQL. Requests are sent from Rust, so there are no browser CORS limits. Cookies persist for the session.
 - **Variables.** `{{variables}}` resolve in the same order as Postman: local, environment, collection, then globals. Dynamic variables such as `{{$guid}}`, `{{$timestamp}}` and `{{$randomEmail}}` work too. The URL bar highlights each variable green when it's defined and red when it isn't.
-- **Shared and current values.** As in Postman, the shared value of a variable syncs with your team. The current value stays on your Mac, and that's where scripts write. A token saved by `pm.environment.set()` never overwrites the value your teammates see.
+- **Shared and current values.** As in Postman, the shared value of a variable syncs with your team. The current value stays on your device, and that's where scripts write. A token saved by `pm.environment.set()` never overwrites the value your teammates see.
 - **Auth.** Inherit from parent, No Auth, Bearer token, Basic, API key (header or query), and OAuth 2.0 with a "Get new access token" button for the client credentials and password grants. Auth types Dispatch can't apply yet are left untouched so they round-trip safely.
 - **Scripts.** Pre-request and post-response scripts run with Postman's `pm` API: `pm.environment`, `pm.collectionVariables`, `pm.globals`, `pm.variables`, `pm.request`, `pm.response`, `pm.test`, `pm.expect`, `pm.sendRequest` and `console.log`. Collection and folder scripts run before the request's own. The real `chai`, `crypto-js` and `lodash` libraries are bundled, so request-signing scripts that use `CryptoJS.MD5` or `CryptoJS.HmacSHA256` work as they do in Postman.
 - **History.** The last 300 requests you sent, grouped by day. Click one to reopen it in a new tab.
@@ -45,15 +45,25 @@ To run a development copy with live reloading of the interface, use `npm run dev
 
 ### Building with GitHub instead
 
-If you'd rather not install the tools, push this folder to a GitHub repository. The included workflow (`.github/workflows/build-macos.yml`) builds a universal disk image for Apple Silicon and Intel Macs, which you can download from the run's **Artifacts** section. That copy isn't notarized, so the first time you open it, right-click the app and choose **Open**.
+If you'd rather not install the tools, push this folder to a GitHub repository. The included workflow (`.github/workflows/release.yml`) builds macOS (Apple Silicon and Intel), Windows and Linux bundles when you push a `v*` tag and attaches them to a GitHub release. Those builds aren't notarized, so the first time you open the Mac app, right-click it and choose **Open**.
+
+## Profiles
+
+Dispatch keeps a built-in **local profile** — requests, collections and environments that live only on your device — and any number of **Postman profiles**, one per Postman account.
+
+- Add an account in **Settings → Profiles → Add Postman profile** (or from the welcome screen). Each profile stores its own API key and region.
+- Switch profiles any time from the footer at the bottom of the sidebar; each profile remembers its last workspace.
+- Renaming, region (US/EU) and disconnecting a profile live under its ⋯ menu in Settings. Disconnecting removes that profile's key from this device; downloaded collections stay.
+- Keys are stored in the macOS Keychain (or a `0600` file in the app data directory elsewhere). The profile name and account info are not secret, so only keys live in the secure store.
+- Existing single-account installs migrate automatically: the key is copied into a "Postman" profile on first launch.
 
 ## Connect your Postman account
 
 1. In Postman, click your avatar, then **Settings → API keys → Generate API key**.
-2. Paste the key into Dispatch when it asks. Dispatch checks the key with Postman before saving it in your macOS Keychain.
-3. If your Postman team is hosted in the EU region, tick the EU box before connecting.
+2. Paste the key into Dispatch. Dispatch checks the key with Postman before saving it on your device.
+3. If that Postman team is hosted in the EU region, tick the EU box when adding the profile.
 
-You can skip this step and use the "On this Mac" workspace, which never syncs.
+You can skip this step and use the "On this device" workspace, which never syncs.
 
 ## How syncing works
 

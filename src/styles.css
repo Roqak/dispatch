@@ -197,6 +197,9 @@ kbd { font: 11px var(--font); color: var(--text-3); border: 1px solid var(--bord
 .side-tools .input { height: 26px; flex: 1; background: var(--panel); font-size: 12px; }
 .side-content { flex: 1; overflow: auto; padding: 2px 6px 12px; }
 .side-foot { border-top: 1px solid var(--border); padding: 8px 10px; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.side-profile { display: flex; align-items: center; gap: 7px; padding: 4px 6px; margin: -4px -6px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; min-width: 0; }
+.side-profile:hover { background: var(--hover); }
+.side-profile .avatar { cursor: inherit; }
 .avatar { width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 700; font-size: 11px; flex-shrink: 0; }
 .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex-shrink: 0; }
 .sync-dot.off { background: var(--text-3); }

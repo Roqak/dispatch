@@ -44,6 +44,10 @@ const mockCloud = {
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Active profile for cloud calls; the store syncs it in browser mode too.
+export const mockCtx = { profileId: null, region: 'us' };
+const keyName = () => `apikey:${mockCtx.profileId ?? 'local'}`;
+
 export const mockBridge = {
   async send(req) {
     await delay(350);
@@ -62,7 +66,7 @@ export const mockBridge = {
   async clearCookies() {},
   async postman(method, path, body) {
     await delay(200);
-    if (!read('apikey')) throw 'Add your Postman API key first (Settings → Postman account).';
+    if (!read(keyName())) throw 'This profile has no Postman API key. Add it under Settings → Profiles.';
     // A tiny fake Postman that remembers writes, so sync flows can be exercised.
     const cloud = read('mockcloud') || JSON.parse(JSON.stringify(mockCloud));
     const save = () => write('mockcloud', cloud);
@@ -121,9 +125,11 @@ export const mockBridge = {
     for (const k of Object.keys(cloud)) if (k.startsWith('/collections?')) cloud[k].collections.forEach((x) => { if (x.uid === uid) x.updatedAt = updatedAt; });
     write('mockcloud', cloud);
   },
-  async setApiKey(key) { await delay(300); if (!key.startsWith('PMAK-')) throw 'Postman rejected the API key.'; write('apikey', key); return mockCloud['/me']; },
-  async hasApiKey() { return !!read('apikey'); },
-  async deleteApiKey() { ls.removeItem('dispatch:apikey'); },
+  async setApiKey(key, profileId, region) { await delay(300); if (!key.startsWith('PMAK-')) throw 'Postman rejected the API key.'; mockCtx.profileId = profileId; mockCtx.region = region || 'us'; write(`apikey:${profileId}`, key); return mockCloud['/me']; },
+  async hasApiKey(profileId) { return !!read(`apikey:${profileId}`); },
+  async deleteApiKey(profileId) { ls.removeItem(`dispatch:apikey:${profileId}`); },
+  async hasLegacyKey() { return !!read('apikey'); },
+  async migrateLegacyKey(profileId) { const k = read('apikey'); if (!k) return false; write(`apikey:${profileId}`, k); return true; },
   async read(name) { return read(name); },
   async write(name, value) { write(name, value); },
   async openTextFile() { return null; },

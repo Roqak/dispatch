@@ -50,13 +50,30 @@ export function renderSidebar(root) {
 
 function footer() {
   const dotClass = !state.hasKey ? 'off' : state.syncError ? 'err' : state.syncing ? 'busy' : '';
-  const label = !state.hasKey ? 'Not connected to Postman' : state.syncError ? 'Sync problem' : state.syncing ? 'Syncing…' : S.isCloud() ? `Synced ${state.lastSync ? relTime(state.lastSync) : ''}`.trim() : 'Local workspace';
-  const who = state.account?.fullName || state.account?.username;
+  const label = !state.hasKey ? 'Local — nothing syncs' : state.syncError ? 'Sync problem' : state.syncing ? 'Syncing…' : S.isCloud() ? `Synced ${state.lastSync ? relTime(state.lastSync) : ''}`.trim() : 'Connected · local workspace';
   return h('div', { class: 'side-foot' },
-    who ? h('div', { class: 'avatar', title: state.account?.email || '' }, who.slice(0, 1).toUpperCase()) : null,
+    profileChip(),
     h('span', { class: ['sync-dot', dotClass] }),
     h('span', { class: 'grow ellipsis muted', title: state.syncError || '' }, label),
     h('button', { class: 'icon-btn', title: 'Settings (⌘,)', onclick: async () => (await import('./panels.js')).openSettings() }, icon('gear')));
+}
+
+function profileChip() {
+  const p = S.activeProfile();
+  return h('button', {
+    class: 'side-profile', title: 'Switch profile',
+    onclick: (e) => showMenu(e, [
+      ...state.profiles.map((pr) => ({
+        label: `${pr.id === p.id ? '● ' : ''}${pr.name}${pr.kind === 'postman' ? (pr.region === 'eu' ? ' · EU' : ' · Postman') : ' · this device'}`,
+        onClick: () => { if (pr.id !== p.id) S.switchProfile(pr.id).catch((er) => toast(errText(er), { error: true })); },
+      })),
+      '-',
+      { label: 'Add Postman profile…', icon: 'plus', onClick: async () => (await import('./panels.js')).addProfileDialog() },
+      { label: 'Manage profiles…', icon: 'gear', onClick: async () => (await import('./panels.js')).openSettings() },
+    ]),
+  },
+    h('div', { class: 'avatar' }, (state.account?.fullName || state.account?.username || p.name).slice(0, 1).toUpperCase()),
+    h('span', { class: 'grow ellipsis' }, p.name));
 }
 
 async function doImport() {

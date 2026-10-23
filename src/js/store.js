@@ -1,10 +1,10 @@
 // App state, persistence and workspace operations.
 
-import { bridge, region } from './bridge.js';
+import { bridge, region, callCtx } from './bridge.js';
 import * as cloud from './sync.js';
 import { clone, newCollection, normaliseImport, forExport, ensureIds, uuid } from './model.js';
 
-export const LOCAL_WS = { id: 'local', name: 'On this Mac (not synced)', type: 'local' };
+export const LOCAL_WS = { id: 'local', name: 'On this device (not synced)', type: 'local' };
 
 export const state = {
   ready: false,
@@ -20,8 +20,11 @@ export const state = {
     responseRatio: 0.48,
     onboarded: false,
     region: 'us',
+    wsByProfile: {},
   },
-  account: null, // { username, fullName, email }
+  account: null, // { username, fullName, email } for the active profile
+  accounts: {}, // profileId → account
+  profiles: [], // [{ id, name, kind: 'local'|'postman', region }]
   hasKey: false,
   workspaces: [LOCAL_WS],
   ws: null,
@@ -44,7 +47,7 @@ function persist(name, getValue, ms = 300) {
   clearTimeout(timers[name]);
   timers[name] = setTimeout(() => bridge.write(name, getValue()).catch((e) => console.error('save failed', name, e)), ms);
 }
-export const saveSettings = () => { region.value = state.settings.region || 'us'; persist('settings', () => state.settings); };
+export const saveSettings = () => { region.value = activeProfile()?.region || state.settings.region || 'us'; persist('settings', () => state.settings); };
 export const saveWorkspace = (ws = state.ws) => { if (ws) persist(`ws-${ws.id}`, () => ws); };
 export const saveTabs = () => persist('tabs', () => ({ tabs: state.tabs.map(serialTab), activeTab: state.activeTab }), 500);
 export const saveHistory = () => persist('history', () => state.history, 800);
@@ -55,17 +58,51 @@ function serialTab(t) {
   return rest;
 }
 
+const applyCallCtx = () => {
+  const p = state.profiles.find((x) => x.id === state.settings.activeProfileId) || state.profiles[0];
+  callCtx.profileId = p.kind === 'postman' ? p.id : null;
+  callCtx.region = p.region || 'us';
+  region.value = callCtx.region;
+};
+
+const postmanProfile = (id) => state.profiles.find((p) => p.id === id && p.kind === 'postman');
+
 export async function init() {
-  const [settings, tabs, history, account, hasKey, workspaces] = await Promise.all([
-    bridge.read('settings'), bridge.read('tabs'), bridge.read('history'), bridge.read('account'), bridge.hasApiKey().catch(() => false), bridge.read('workspaces'),
+  const [settings, tabs, history, accounts] = await Promise.all([
+    bridge.read('settings'), bridge.read('tabs'), bridge.read('history'), bridge.read('accounts'),
   ]);
   Object.assign(state.settings, settings || {});
   region.value = state.settings.region || 'us';
   state.history = history || [];
-  state.account = account || null;
-  state.hasKey = !!hasKey;
-  if (workspaces?.length) state.workspaces = [...workspaces.filter((w) => w.id !== 'local'), LOCAL_WS];
+  state.accounts = accounts || {};
+  state.profiles = (state.settings.profiles || []).filter((p) => p && p.kind === 'postman' && p.id);
+
+  // First boot after profiles existed: migrate the legacy single key.
+  if (!state.profiles.length && !(await bridge.hasApiKey('postman').catch(() => false)) && (await bridge.hasLegacyKey().catch(() => false))) {
+    if (await bridge.migrateLegacyKey('postman').catch(() => false)) {
+      state.profiles.push({ id: 'postman', name: state.accounts.postman?.username || 'Postman', kind: 'postman', region: state.settings.region || 'us' });
+      state.accounts.postman = state.accounts.postman || ((await bridge.read('account')) ?? settings?.account) || null;
+      await bridge.write('accounts', state.accounts);
+    }
+  }
+
+  if (!state.settings.onboarded && state.profiles.length) state.settings.onboarded = true;
+  // The local profile is built in and always first.
+  state.profiles = [{ id: 'local', name: 'On this device (not synced)', kind: 'local', region: 'us' }].concat(state.profiles.filter((p) => p.kind === 'postman'));
+  state.settings.profiles = state.profiles; // keep the persisted copy in one place
+  // Upgraded users land on their existing Postman sync, as before.
+  const firstPostman = state.profiles.find((p) => p.kind === 'postman');
+  if (!(settings?.profiles?.length) && firstPostman) state.settings.activeProfileId = firstPostman.id;
+  else state.settings.activeProfileId = state.profiles.some((p) => p.id === state.settings.activeProfileId) ? state.settings.activeProfileId : 'local';
+  applyCallCtx();
+
   if (tabs?.tabs) { state.tabs = tabs.tabs; state.activeTab = tabs.activeTab; }
+  const meta = activeProfile();
+  state.account = state.accounts[meta.id] || null;
+  state.hasKey = meta.kind === 'postman';
+
+  const wsList = state.hasKey ? ((await bridge.read(`workspaces-${meta.id}`)) || (await bridge.read('workspaces')) || []) : [];
+  state.workspaces = wsList.length ? [...wsList, LOCAL_WS] : [LOCAL_WS];
   const wsId = state.settings.wsId && state.workspaces.some((w) => w.id === state.settings.wsId) ? state.settings.wsId : state.workspaces[0].id;
   await openWorkspace(wsId, { refresh: false });
   state.ready = true;
@@ -75,22 +112,72 @@ export async function init() {
 
 // ---------- account ----------
 
-export async function connectAccount(key) {
-  const me = await bridge.setApiKey(key);
-  state.hasKey = true;
-  state.account = { username: me.user?.username, fullName: me.user?.fullName, email: me.user?.email };
-  await bridge.write('account', state.account);
-  state.settings.onboarded = true;
-  saveSettings();
-  await refreshAll();
+export function activeProfile() {
+  return state.profiles.find((p) => p.id === state.settings.activeProfileId) || state.profiles[0];
 }
 
-export async function disconnectAccount() {
-  await bridge.deleteApiKey();
-  state.hasKey = false;
-  state.account = null;
-  await bridge.write('account', null);
+/** Add a Postman account: verify the key, store it under the profile, switch to it. */
+export async function addProfile({ key, name, region: profRegion }) {
+  const id = uuid().replace(/-/g, '');
+  const me = await bridge.setApiKey(key, id, profRegion || 'us');
+  const profile = { id, name: (name || '').trim() || me.user?.username || me.user?.fullName || 'Postman', kind: 'postman', region: profRegion || 'us' };
+  state.profiles.push(profile);
+  state.settings.profiles = state.profiles;
+  state.accounts[id] = { username: me.user?.username, fullName: me.user?.fullName, email: me.user?.email };
+  await bridge.write('accounts', state.accounts);
+  state.settings.onboarded = true;
+  await switchProfile(id);
+  return profile;
+}
+
+export async function switchProfile(id) {
+  if (id === state.settings.activeProfileId || !state.profiles.some((p) => p.id === id)) return;
+  saveWorkspace(); // leave the current workspace persisted on its own profile
+  const profile = state.profiles.find((p) => p.id === id);
+  state.settings.activeProfileId = id;
+  applyCallCtx();
+  state.account = state.accounts[id] || null;
+  state.hasKey = profile.kind === 'postman';
+  saveSettings();
+  const wsList = state.hasKey ? ((await bridge.read(`workspaces-${id}`)) || (id === 'postman' && (await bridge.read('workspaces'))) || []) : [];
+  state.workspaces = wsList.length ? [...wsList, LOCAL_WS] : [LOCAL_WS];
+  state.settings.wsId = state.settings.wsByProfile?.[id] || null;
   emit('all');
+  const wsId = state.settings.wsId && state.workspaces.some((w) => w.id === state.settings.wsId) ? state.settings.wsId : state.workspaces[0].id;
+  await openWorkspace(wsId, { refresh: false });
+  if (state.hasKey) refreshAll().catch(() => {});
+}
+
+export async function renameProfile(id, name) {
+  const p = state.profiles.find((x) => x.id === id);
+  if (!p || !name?.trim()) return;
+  p.name = name.trim();
+  state.settings.profiles = state.profiles;
+  saveSettings();
+  emit('all');
+}
+
+export async function setProfileRegion(id, value) {
+  const p = state.profiles.find((x) => x.id === id);
+  if (!p) return;
+  p.region = value === 'eu' ? 'eu' : 'us';
+  state.settings.profiles = state.profiles;
+  if (p.id === state.settings.activeProfileId) applyCallCtx();
+  saveSettings();
+  emit('all');
+}
+
+/** Remove a Postman profile: deletes its stored key. The local profile stays. */
+export async function removeProfile(id) {
+  const profile = state.profiles.find((p) => p.id === id);
+  if (!profile || profile.kind !== 'postman') return;
+  await bridge.deleteApiKey(id);
+  state.profiles = state.profiles.filter((p) => p.id !== id);
+  state.settings.profiles = state.profiles;
+  delete state.accounts[id];
+  await bridge.write('accounts', state.accounts);
+  if (state.settings.activeProfileId === id) await switchProfile(state.profiles[0].id);
+  else { saveSettings(); emit('all'); }
 }
 
 // ---------- workspaces ----------
@@ -108,6 +195,8 @@ export async function openWorkspace(id, { refresh = true } = {}) {
   state.ws.globals = state.ws.globals || { values: [], overlay: {}, dirty: false };
   state.ws.colOverlays = state.ws.colOverlays || {};
   state.settings.wsId = id;
+  state.settings.wsByProfile = state.settings.wsByProfile || {};
+  state.settings.wsByProfile[state.settings.activeProfileId] = id;
   saveSettings();
   emit('sidebar', 'env', 'workspace');
   if (refresh && id !== 'local' && state.hasKey) await refreshWorkspace().catch(() => {});
@@ -123,7 +212,7 @@ export async function refreshAll() {
   try {
     const list = await cloud.listWorkspaces();
     state.workspaces = [...list, LOCAL_WS];
-    bridge.write('workspaces', list);
+    bridge.write(`workspaces-${state.settings.activeProfileId}`, list);
     const preferred = list.find((w) => w.type === 'personal') || list[0];
     const currentGone = !state.workspaces.some((w) => w.id === state.ws?.id);
     const neverChose = state.ws?.id === 'local' && !state.settings.wsChosen && !state.ws.collections.length;

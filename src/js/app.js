@@ -56,7 +56,7 @@ function renderMain() {
   const t = C.activeTab();
   editorEl = null;
   responseEl = null;
-  if (!state.hasKey && !state.settings.onboarded) return renderWelcome(workspaceEl);
+  if (!state.settings.onboarded) return renderWelcome(workspaceEl);
   if (!t) return renderEmpty(workspaceEl);
   if (t.kind === 'request') {
     editorEl = h('section', { id: 'editor' });

@@ -39,29 +39,50 @@ fn clear_cookies(state: State<'_, http::HttpState>) {
 // ---------- Postman ----------
 
 #[tauri::command]
-async fn postman_api(app: AppHandle, method: String, path: String, body: Option<Value>, region: Option<String>) -> Result<Value, String> {
-    let key = secrets::get(&data_dir(&app)?)?
-        .ok_or_else(|| "Add your Postman API key first (Settings → Postman account).".to_string())?;
+async fn postman_api(
+    app: AppHandle,
+    profile_id: String,
+    method: String,
+    path: String,
+    body: Option<Value>,
+    region: Option<String>,
+) -> Result<Value, String> {
+    let profile_id = safe_name(&profile_id)?;
+    let key = secrets::get(&data_dir(&app)?, profile_id)?.ok_or_else(|| {
+        "This profile has no Postman API key. Add it under Settings → Profiles.".to_string()
+    })?;
     postman::call(&key, region.as_deref().unwrap_or("us"), &method, &path, body).await
 }
 
 #[tauri::command]
-async fn set_api_key(app: AppHandle, key: String, region: Option<String>) -> Result<Value, String> {
+async fn set_api_key(app: AppHandle, profile_id: String, key: String, region: Option<String>) -> Result<Value, String> {
+    let profile_id = safe_name(&profile_id)?.to_string();
     let key = key.trim().to_string();
     // Verify before saving so a typo doesn't get stored.
     let me = postman::call(&key, region.as_deref().unwrap_or("us"), "GET", "/me", None).await?;
-    secrets::set(&data_dir(&app)?, &key)?;
+    secrets::set(&data_dir(&app)?, &profile_id, &key)?;
     Ok(me)
 }
 
 #[tauri::command]
-fn has_api_key(app: AppHandle) -> Result<bool, String> {
-    Ok(secrets::get(&data_dir(&app)?)?.is_some())
+fn has_api_key(app: AppHandle, profile_id: String) -> Result<bool, String> {
+    Ok(secrets::get(&data_dir(&app)?, safe_name(&profile_id)?)?.is_some())
 }
 
 #[tauri::command]
-fn delete_api_key(app: AppHandle) -> Result<(), String> {
-    secrets::delete(&data_dir(&app)?)
+fn delete_api_key(app: AppHandle, profile_id: String) -> Result<(), String> {
+    secrets::delete(&data_dir(&app)?, safe_name(&profile_id)?)
+}
+
+#[tauri::command]
+fn has_legacy_api_key(app: AppHandle) -> Result<bool, String> {
+    Ok(secrets::legacy_has(&data_dir(&app)?))
+}
+
+/// Copies the pre-profiles single key into a named profile.
+#[tauri::command]
+fn migrate_legacy_key(app: AppHandle, profile_id: String) -> Result<bool, String> {
+    secrets::legacy_copy_value(&data_dir(&app)?, safe_name(&profile_id)?)
 }
 
 // ---------- Local storage (cache, history, settings) ----------
@@ -139,6 +160,8 @@ pub fn run() {
             set_api_key,
             has_api_key,
             delete_api_key,
+            has_legacy_api_key,
+            migrate_legacy_key,
             store_read,
             store_write,
             open_text_file,

@@ -1,54 +1,82 @@
-//! Stores the Postman API key. On macOS it goes in the Keychain; elsewhere it
-//! falls back to a file readable only by the current user.
+//! Stores Postman API keys, one per profile. On macOS they go in the Keychain;
+//! elsewhere in files readable only by the current user.
+
+const LEGACY_FILE: &str = "postman-api-key";
+
+fn profile_file(profile_id: &str) -> String {
+    format!("postman-api-key-{}", profile_id)
+}
 
 #[cfg(target_os = "macos")]
 mod imp {
-    const SERVICE: &str = "app.dispatch.client";
-    const ACCOUNT: &str = "postman-api-key";
+    use super::profile_file;
 
-    fn entry() -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| e.to_string())
+    const SERVICE: &str = "app.dispatch.client";
+
+    fn entry(profile_id: &str) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(SERVICE, &profile_file(profile_id)).map_err(|e| e.to_string())
     }
 
-    pub fn get(_dir: &std::path::Path) -> Result<Option<String>, String> {
-        match entry()?.get_password() {
+    fn legacy_entry() -> Result<keyring::Entry, String> {
+        keyring::Entry::new(SERVICE, "postman-api-key").map_err(|e| e.to_string())
+    }
+
+    pub fn get(_dir: &std::path::Path, profile_id: &str) -> Result<Option<String>, String> {
+        match entry(profile_id)?.get_password() {
             Ok(v) => Ok(Some(v)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(format!("Couldn't read the key from Keychain: {e}")),
         }
     }
 
-    pub fn set(_dir: &std::path::Path, value: &str) -> Result<(), String> {
-        entry()?.set_password(value).map_err(|e| format!("Couldn't save the key to Keychain: {e}"))
+    pub fn set(_dir: &std::path::Path, profile_id: &str, value: &str) -> Result<(), String> {
+        entry(profile_id)?.set_password(value).map_err(|e| format!("Couldn't save the key to Keychain: {e}"))
     }
 
-    pub fn delete(_dir: &std::path::Path) -> Result<(), String> {
-        match entry()?.delete_credential() {
+    pub fn delete(_dir: &std::path::Path, profile_id: &str) -> Result<(), String> {
+        match entry(profile_id)?.delete_credential() {
             Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
+        }
+    }
+
+    pub fn legacy_has(_dir: &std::path::Path) -> bool {
+        matches!(legacy_entry().and_then(|e| e.get_password()), Ok(_))
+    }
+
+    pub fn legacy_get(_dir: &std::path::Path) -> Result<Option<String>, String> {
+        match legacy_entry()?.get_password() {
+            Ok(v) => Ok(Some(v)),
+            Err(keyring::Error::NoEntry) | Err(keyring::Error::Ambiguous(_)) => Ok(None),
+            Err(e) => Err(format!("Couldn't read the key from Keychain: {e}")),
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
+    use super::profile_file;
     use std::path::{Path, PathBuf};
 
-    fn path(dir: &Path) -> PathBuf {
-        dir.join("postman-api-key")
+    fn path(dir: &Path, profile_id: &str) -> PathBuf {
+        dir.join(profile_file(profile_id))
     }
 
-    pub fn get(dir: &Path) -> Result<Option<String>, String> {
-        match std::fs::read_to_string(path(dir)) {
+    fn legacy_path(dir: &Path) -> PathBuf {
+        dir.join(super::LEGACY_FILE)
+    }
+
+    pub fn get(dir: &Path, profile_id: &str) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(path(dir, profile_id)) {
             Ok(v) => Ok(Some(v.trim().to_string())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e.to_string()),
         }
     }
 
-    pub fn set(dir: &Path, value: &str) -> Result<(), String> {
+    pub fn set(dir: &Path, profile_id: &str, value: &str) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let p = path(dir);
+        let p = path(dir, profile_id);
         std::fs::write(&p, value).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
@@ -58,13 +86,34 @@ mod imp {
         Ok(())
     }
 
-    pub fn delete(dir: &Path) -> Result<(), String> {
-        match std::fs::remove_file(path(dir)) {
+    pub fn delete(dir: &Path, profile_id: &str) -> Result<(), String> {
+        match std::fs::remove_file(path(dir, profile_id)) {
             Ok(_) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.to_string()),
         }
     }
+
+    pub fn legacy_has(dir: &Path) -> bool {
+        legacy_path(dir).is_file()
+    }
+
+    pub fn legacy_get(dir: &Path) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(legacy_path(dir)) {
+            Ok(v) => Ok(Some(v.trim().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
-pub use imp::{delete, get, set};
+/// Copies the pre-profiles single key to a profile. Keeps the legacy copy in
+/// place so the old build keeps working if the user rolls back.
+pub fn legacy_copy_value(dir: &std::path::Path, profile_id: &str) -> Result<bool, String> {
+    match imp::legacy_get(dir)? {
+        Some(v) => set(dir, profile_id, v.trim()).map(|_| true),
+        None => Ok(false),
+    }
+}
+
+pub use imp::{delete, get, legacy_has, set};
