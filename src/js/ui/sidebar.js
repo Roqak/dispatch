@@ -1,0 +1,334 @@
+import { h, icon, showMenu, promptDialog, toast, errText, methodClass, methodLabel, relTime, confirmDialog } from './dom.js';
+import * as S from '../store.js';
+import { state } from '../store.js';
+import * as C from '../ctx.js';
+import { isFolder, itemId, urlObject, clone } from '../model.js';
+
+let sideTab = 'collections';
+let filter = '';
+
+export function renderSidebar(root) {
+  const wsSelect = h('select', { class: 'select ws-select', title: 'Workspace', onchange: async (e) => {
+    state.settings.wsChosen = true;
+    await S.openWorkspace(e.target.value).catch((err) => toast(errText(err), { error: true }));
+  } }, state.workspaces.map((w) => h('option', { value: w.id, selected: w.id === state.ws?.id }, w.name)));
+
+  const syncBtn = h('button', {
+    class: 'icon-btn', title: state.hasKey ? 'Sync with Postman' : 'Connect Postman to sync',
+    disabled: !S.isCloud() && state.hasKey,
+    onclick: async () => {
+      if (!state.hasKey) return (await import('./panels.js')).openSettings();
+      try { await S.refreshAll(); toast('Up to date with Postman'); } catch (e) { toast(errText(e), { error: true }); }
+    },
+  }, icon('sync', state.syncing ? 'spin' : ''));
+
+  const tabs = h('div', { class: 'side-tabs' },
+    [['collections', 'Collections'], ['environments', 'Environments'], ['history', 'History']].map(([id, label]) =>
+      h('button', { class: ['side-tab', sideTab === id && 'active'], onclick: () => { sideTab = id; renderSidebar(root); } }, label)));
+
+  const search = h('input', { class: 'input', placeholder: sideTab === 'history' ? 'Filter history' : 'Filter', value: filter, oninput: (e) => { filter = e.target.value; renderList(); } });
+  const tools = h('div', { class: 'side-tools' },
+    h('button', { class: 'icon-btn', title: 'New', onclick: (e) => newMenu(e) }, icon('plus')),
+    search,
+    sideTab === 'history'
+      ? h('button', { class: 'icon-btn', title: 'Clear history', onclick: async () => { if (await confirmDialog({ title: 'Clear history?', message: 'This removes every request from your local history.', confirm: 'Clear', danger: true })) S.clearHistory(); } }, icon('trash'))
+      : h('button', { class: 'icon-btn', title: 'Import a Postman collection or environment file', onclick: doImport }, icon('download')));
+
+  const list = h('div', { class: 'side-content' });
+  const foot = footer();
+
+  root.replaceChildren(h('div', { class: 'titlebar-space drag' }), h('div', { class: 'ws-bar' }, wsSelect, syncBtn), tabs, tools, list, foot);
+
+  function renderList() {
+    if (sideTab === 'collections') list.replaceChildren(...collectionsView());
+    else if (sideTab === 'environments') list.replaceChildren(...environmentsView());
+    else list.replaceChildren(...historyView());
+  }
+  renderList();
+  root.renderList = renderList;
+}
+
+function footer() {
+  const dotClass = !state.hasKey ? 'off' : state.syncError ? 'err' : state.syncing ? 'busy' : '';
+  const label = !state.hasKey ? 'Not connected to Postman' : state.syncError ? 'Sync problem' : state.syncing ? 'Syncing…' : S.isCloud() ? `Synced ${state.lastSync ? relTime(state.lastSync) : ''}`.trim() : 'Local workspace';
+  const who = state.account?.fullName || state.account?.username;
+  return h('div', { class: 'side-foot' },
+    who ? h('div', { class: 'avatar', title: state.account?.email || '' }, who.slice(0, 1).toUpperCase()) : null,
+    h('span', { class: ['sync-dot', dotClass] }),
+    h('span', { class: 'grow ellipsis muted', title: state.syncError || '' }, label),
+    h('button', { class: 'icon-btn', title: 'Settings (⌘,)', onclick: async () => (await import('./panels.js')).openSettings() }, icon('gear')));
+}
+
+async function doImport() {
+  try {
+    const r = await S.importFromFile();
+    if (r) toast(`Imported ${r.kind} "${r.name}"${S.isCloud() ? ' and uploaded it to Postman' : ''}`);
+  } catch (e) { toast(errText(e), { error: true }); }
+}
+
+function newMenu(e) {
+  showMenu(e, [
+    { label: 'New request', icon: 'send', key: '⌘T', onClick: () => C.openDraft() },
+    { label: 'New collection', icon: 'box', onClick: newCollection },
+    { label: 'New environment', icon: 'globe', onClick: newEnvironment },
+    '-',
+    { label: 'Import file…', icon: 'download', onClick: doImport },
+  ]);
+}
+
+async function newCollection() {
+  const name = await promptDialog({ title: 'New collection', label: S.isCloud() ? `It will be created in "${state.ws.name}" in Postman.` : 'It will be stored on this Mac only.', value: 'New Collection' });
+  if (!name) return;
+  try { const entry = await S.createCollection(name); C.toggleExpanded(entry.uid, true); sideTab = 'collections'; } catch (e) { toast(errText(e), { error: true }); }
+}
+
+async function newEnvironment() {
+  const name = await promptDialog({ title: 'New environment', value: 'New Environment' });
+  if (!name) return;
+  try { const env = await S.createEnvironment(name); sideTab = 'environments'; C.openEnv(env); } catch (e) { toast(errText(e), { error: true }); }
+}
+
+// ---------- collections ----------
+
+const matches = (it) => !filter || it.name?.toLowerCase().includes(filter.toLowerCase()) || (isFolder(it) && it.item.some(matches));
+
+function collectionsView() {
+  const cols = state.ws?.collections || [];
+  if (!cols.length) {
+    return [h('div', { class: 'side-empty' },
+      h('div', { style: { fontWeight: 600, color: 'var(--text)' } }, 'No collections yet'),
+      h('p', null, S.isCloud() ? (state.syncing ? 'Loading from Postman…' : 'Create one, or import a Postman export.') : 'Collections here stay on this Mac.'),
+      h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn sm', onclick: newCollection }, 'New collection'), h('button', { class: 'btn sm', onclick: doImport }, 'Import')))];
+  }
+  const open = C.expanded();
+  const active = C.activeTab();
+  const out = [];
+  for (const entry of cols) {
+    const isOpen = open.includes(entry.uid) || !!filter;
+    if (filter && entry.data && !entry.data.item.some(matches) && !entry.name.toLowerCase().includes(filter.toLowerCase())) continue;
+    out.push(collectionRow(entry, isOpen, active));
+    if (isOpen) {
+      if (!entry.data) out.push(h('div', { class: 'tree-row faint', style: { '--depth': 1 } }, h('span', { class: 'chev blank' }), 'Loading…'));
+      else if (!entry.data.item.length) out.push(h('div', { class: 'tree-row faint', style: { '--depth': 1.6, fontSize: '12px' } }, 'Empty. ', h('a', { style: { color: 'var(--accent)', marginLeft: '4px' }, onclick: () => C.addRequest(entry) }, 'Add a request')));
+      else out.push(...itemsRows(entry, entry.data.item, 1, open, active));
+    }
+  }
+  return out;
+}
+
+function collectionRow(entry, isOpen, active) {
+  const status = entry.pushing ? h('span', { class: 'badge local' }, 'syncing')
+    : entry.conflict ? h('span', { class: 'badge err', title: 'Changed in Postman and here' }, 'conflict')
+    : entry.deletedRemotely ? h('span', { class: 'badge err', title: 'Deleted in Postman' }, 'deleted')
+    : entry.dirty && S.isCloud() ? h('span', { class: 'badge dirty', title: 'Local changes not yet in Postman' }, 'unsynced') : null;
+  const row = h('div', {
+    class: ['tree-row col', active?.kind === 'container' && active.ref.col === entry.uid && !active.ref.item && 'selected'],
+    style: { '--depth': 0 },
+    onclick: async () => {
+      C.toggleExpanded(entry.uid);
+      if (!entry.data) S.ensureCollection(entry).catch((e) => toast(errText(e), { error: true }));
+    },
+    oncontextmenu: (e) => { e.preventDefault(); colMenu(e, entry, row); },
+  },
+    icon('chevron', `chev${isOpen ? ' open' : ''}`),
+    icon('box', 'ico'),
+    h('span', { class: 'name', title: entry.name }, entry.name),
+    status,
+    h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', title: 'More', onclick: (e) => { e.stopPropagation(); colMenu(e, entry, row); } }, icon('more'))));
+  dropTarget(row, entry, null);
+  return row;
+}
+
+function colMenu(e, entry, row) {
+  showMenu(e, [
+    { label: 'Add request', icon: 'plus', onClick: () => C.addRequest(entry) },
+    { label: 'Add folder', icon: 'folder', onClick: async () => { const n = await promptDialog({ title: 'New folder', value: 'New Folder' }); if (n) C.addFolder(entry, null, n); } },
+    { label: 'Settings, auth & variables', icon: 'gear', onClick: () => C.openContainer(entry) },
+    '-',
+    { label: 'Rename', icon: 'edit', onClick: async () => { await S.ensureCollection(entry); const n = await promptDialog({ title: 'Rename collection', value: entry.name, confirm: 'Rename' }); if (n) C.renameItem(entry, null, n); } },
+    { label: 'Export…', icon: 'upload', onClick: async () => { try { const p = await S.exportCollection(entry); if (p) toast(`Exported to ${p}`); } catch (er) { toast(errText(er), { error: true }); } } },
+    S.isCloud() ? '-' : null,
+    S.isCloud() && entry.dirty ? { label: 'Push to Postman now', icon: 'cloudUp', onClick: () => C.pushNow(entry) } : null,
+    S.isCloud() && !entry.pendingCreate ? { label: 'Reload from Postman', icon: 'sync', onClick: async () => {
+      if (entry.dirty && !(await confirmDialog({ title: 'Discard local changes?', message: `"${entry.name}" has changes that aren't in Postman yet. Reloading replaces them with Postman's version.`, confirm: 'Reload', danger: true }))) return;
+      try { await S.pullCollection(entry, { discard: true }); C.refreshCleanTabs(); toast('Reloaded from Postman'); } catch (er) { toast(errText(er), { error: true }); }
+    } } : null,
+    !S.isCloud() || entry.deletedRemotely ? '-' : null,
+    !S.isCloud() || entry.deletedRemotely ? { label: 'Remove from Dispatch', icon: 'trash', danger: true, onClick: async () => {
+      if (await confirmDialog({ title: `Remove "${entry.name}"?`, message: 'It will be deleted from this Mac. Export it first if you want a copy.', confirm: 'Remove', danger: true })) S.removeLocalCollection(entry);
+    } } : null,
+  ].filter((x, i, a) => x !== null && !(x === '-' && (a[i - 1] === '-' || i === a.length - 1))), row);
+}
+
+function itemsRows(entry, items, depth, open, active) {
+  const rows = [];
+  for (const it of items) {
+    if (!matches(it)) continue;
+    const id = itemId(it);
+    if (isFolder(it)) {
+      const isOpen = open.includes(id) || !!filter;
+      const row = h('div', {
+        class: ['tree-row', active?.kind === 'container' && active.ref.item === id && 'selected'],
+        style: { '--depth': depth }, draggable: 'true',
+        onclick: () => C.toggleExpanded(id),
+        oncontextmenu: (e) => { e.preventDefault(); folderMenu(e, entry, it, row); },
+      },
+        icon('chevron', `chev${isOpen ? ' open' : ''}`),
+        icon(isOpen ? 'folderOpen' : 'folder', 'ico'),
+        h('span', { class: 'name', title: it.name }, it.name),
+        h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', onclick: (e) => { e.stopPropagation(); folderMenu(e, entry, it, row); } }, icon('more'))));
+      dragSource(row, entry, id);
+      dropTarget(row, entry, id, true);
+      rows.push(row);
+      if (isOpen) rows.push(...itemsRows(entry, it.item, depth + 1, open, active));
+    } else {
+      const m = it.request?.method || 'GET';
+      const tab = C.findTab((t) => t.kind === 'request' && t.ref?.col === entry.uid && t.ref.item === id);
+      const row = h('div', {
+        class: ['tree-row', active && active === tab && 'selected'],
+        style: { '--depth': depth }, draggable: 'true',
+        onclick: () => C.openItem(entry, id),
+        oncontextmenu: (e) => { e.preventDefault(); reqMenu(e, entry, it, row); },
+      },
+        h('span', { class: 'chev blank', style: { width: '0' } }),
+        h('span', { class: ['method', methodClass(m)] }, methodLabel(m)),
+        h('span', { class: 'name', title: it.name }, it.name),
+        tab?.dirty ? h('span', { class: 'sync-dot busy', title: 'Unsaved changes' }) : null,
+        h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', onclick: (e) => { e.stopPropagation(); reqMenu(e, entry, it, row); } }, icon('more'))));
+      dragSource(row, entry, id);
+      dropTarget(row, entry, id, false);
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function folderMenu(e, entry, it, row) {
+  showMenu(e, [
+    { label: 'Add request', icon: 'plus', onClick: () => C.addRequest(entry, it.id) },
+    { label: 'Add folder', icon: 'folder', onClick: async () => { const n = await promptDialog({ title: 'New folder', value: 'New Folder' }); if (n) C.addFolder(entry, it.id, n); } },
+    { label: 'Folder settings & auth', icon: 'gear', onClick: () => C.openContainer(entry, it.id) },
+    '-',
+    { label: 'Rename', icon: 'edit', onClick: async () => { const n = await promptDialog({ title: 'Rename folder', value: it.name, confirm: 'Rename' }); if (n) C.renameItem(entry, it.id, n); } },
+    { label: 'Duplicate', icon: 'copy', onClick: () => C.duplicate(entry, it.id) },
+    '-',
+    { label: 'Delete', icon: 'trash', danger: true, onClick: () => C.removeItem(entry, it.id) },
+  ], row);
+}
+
+function reqMenu(e, entry, it, row) {
+  showMenu(e, [
+    { label: 'Open', icon: 'send', onClick: () => C.openItem(entry, it.id) },
+    { label: 'Rename', icon: 'edit', onClick: async () => { const n = await promptDialog({ title: 'Rename request', value: it.name, confirm: 'Rename' }); if (n) C.renameItem(entry, it.id, n); } },
+    { label: 'Duplicate', icon: 'copy', onClick: () => C.duplicate(entry, it.id) },
+    '-',
+    { label: 'Delete', icon: 'trash', danger: true, onClick: () => C.removeItem(entry, it.id) },
+  ], row);
+}
+
+// drag & drop within a collection
+let drag = null;
+function dragSource(row, entry, id) {
+  row.addEventListener('dragstart', (e) => { drag = { entry, id }; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id); row.style.opacity = '.5'; });
+  row.addEventListener('dragend', () => { drag = null; row.style.opacity = ''; });
+}
+function dropTarget(row, entry, id, folder = false) {
+  const clear = () => row.classList.remove('drop-before', 'drop-after', 'drop-inside');
+  const zone = (e) => {
+    if (id === null) return 'inside';
+    const r = row.getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    if (folder) return y < 0.25 ? 'before' : y > 0.75 ? 'after' : 'inside';
+    return y < 0.5 ? 'before' : 'after';
+  };
+  row.addEventListener('dragover', (e) => {
+    if (!drag || drag.entry !== entry || drag.id === id) return;
+    e.preventDefault();
+    clear();
+    row.classList.add(`drop-${zone(e)}`);
+  });
+  row.addEventListener('dragleave', clear);
+  row.addEventListener('drop', (e) => {
+    e.preventDefault();
+    clear();
+    if (!drag || drag.entry !== entry) return;
+    C.moveItem(entry, drag.id, id, zone(e));
+  });
+}
+
+// ---------- environments ----------
+
+function environmentsView() {
+  const envs = state.ws?.environments || [];
+  const active = S.activeEnvEntry();
+  const tab = C.activeTab();
+  const q = filter.toLowerCase();
+  const rows = [
+    h('div', { class: ['tree-row', tab?.kind === 'globals' && 'selected'], onclick: () => C.openGlobals() },
+      icon('globe', 'ico'), h('span', { class: 'name' }, 'Globals'),
+      state.ws.globals.conflict ? h('span', { class: 'badge err' }, 'conflict') : state.ws.globals.dirty && S.isCloud() ? h('span', { class: 'badge dirty' }, 'unsynced') : null,
+      state.ws.globals.dirty && S.isCloud() ? h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', title: 'Push globals to Postman', onclick: async (e) => {
+        e.stopPropagation();
+        try { await S.pushGlobals(); toast('Globals synced to Postman'); } catch (er) { if (er instanceof S.ConflictError) C.handleConflict(er); else toast(errText(er), { error: true }); }
+      } }, icon('cloudUp'))) : null),
+    h('div', { class: 'group-label' }, 'Environments'),
+  ];
+  if (!envs.length) rows.push(h('div', { class: 'side-empty' }, h('p', null, 'No environments yet.'), h('button', { class: 'btn sm', onclick: newEnvironment }, 'New environment')));
+  for (const env of envs) {
+    if (q && !env.name.toLowerCase().includes(q)) continue;
+    const isActive = active === env;
+    const row = h('div', {
+      class: ['tree-row', tab?.kind === 'env' && tab.ref.env === env.uid && 'selected'],
+      onclick: () => C.openEnv(env),
+      oncontextmenu: (e) => { e.preventDefault(); envMenu(e, env, row); },
+    },
+      h('button', { class: 'icon-btn sm', title: isActive ? 'Active environment' : 'Set as active', onclick: (e) => { e.stopPropagation(); S.setActiveEnv(isActive ? null : env.uid); } },
+        isActive ? icon('check') : h('span', { style: { width: '12px', height: '12px', borderRadius: '50%', border: '1.5px solid var(--border-strong)', display: 'block' } })),
+      h('span', { class: 'name', style: isActive ? { fontWeight: 600 } : null }, env.name),
+      env.conflict ? h('span', { class: 'badge err' }, 'conflict') : env.dirty && S.isCloud() ? h('span', { class: 'badge dirty' }, 'unsynced') : null,
+      h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', onclick: (e) => { e.stopPropagation(); envMenu(e, env, row); } }, icon('more'))));
+    rows.push(row);
+  }
+  return rows;
+}
+
+function envMenu(e, env, row) {
+  showMenu(e, [
+    { label: 'Open', icon: 'edit', onClick: () => C.openEnv(env) },
+    { label: 'Set as active', icon: 'check', onClick: () => S.setActiveEnv(env.uid) },
+    { label: 'Export…', icon: 'upload', onClick: async () => { try { const p = await S.exportEnvironment(env); if (p) toast(`Exported to ${p}`); } catch (er) { toast(errText(er), { error: true }); } } },
+    S.isCloud() && env.dirty ? { label: 'Push to Postman now', icon: 'cloudUp', onClick: async () => { try { await S.pushEnvironment(env); toast('Synced'); } catch (er) { if (er instanceof S.ConflictError) C.handleConflict(er); else toast(errText(er), { error: true }); } } } : null,
+    { label: 'Reset current values', icon: 'sync', onClick: () => { env.overlay = {}; S.overlaysChanged(); toast('Current values reset to the shared values'); } },
+  ].filter(Boolean), row);
+}
+
+// ---------- history ----------
+
+function historyView() {
+  const q = filter.toLowerCase();
+  const items = state.history.filter((x) => !q || x.url?.toLowerCase().includes(q) || x.name?.toLowerCase().includes(q));
+  if (!items.length) return [h('div', { class: 'side-empty' }, h('p', null, q ? 'Nothing matches.' : 'Requests you send show up here.'))];
+  const out = [];
+  let lastDay = '';
+  const today = new Date().toDateString();
+  const yest = new Date(Date.now() - 864e5).toDateString();
+  for (const x of items) {
+    const d = new Date(x.ts).toDateString();
+    if (d !== lastDay) {
+      out.push(h('div', { class: 'group-label' }, d === today ? 'Today' : d === yest ? 'Yesterday' : new Date(x.ts).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })));
+      lastDay = d;
+    }
+    const st = x.status;
+    out.push(h('div', {
+      class: 'hist-row', title: `${x.name || ''}\n${x.url}\n${new Date(x.ts).toLocaleTimeString()}`,
+      onclick: () => {
+        const item = { id: crypto.randomUUID?.() || String(Math.random()), name: x.name || 'From history', request: clone(x.request) };
+        C.openDraft(item);
+      },
+    },
+      h('span', { class: ['method', methodClass(x.method)] }, methodLabel(x.method)),
+      h('span', { class: 'url mono' }, x.url || urlObject(x.request?.url).raw),
+      h('span', { class: 'st', style: { color: !st ? 'var(--err)' : st < 300 ? 'var(--ok)' : st < 400 ? 'var(--info)' : st < 500 ? 'var(--warn)' : 'var(--err)' } }, st || 'ERR')));
+  }
+  return out;
+}

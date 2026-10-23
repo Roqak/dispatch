@@ -1,0 +1,552 @@
+// App state, persistence and workspace operations.
+
+import { bridge, region } from './bridge.js';
+import * as cloud from './sync.js';
+import { clone, newCollection, normaliseImport, forExport, ensureIds, uuid } from './model.js';
+
+export const LOCAL_WS = { id: 'local', name: 'On this Mac (not synced)', type: 'local' };
+
+export const state = {
+  ready: false,
+  settings: {
+    timeoutMs: 30000,
+    followRedirects: true,
+    verifySsl: true,
+    theme: 'system',
+    syncMode: 'auto', // 'auto' pushes on save; 'manual' waits for Push
+    wsId: null,
+    envByWs: {},
+    sidebarWidth: 290,
+    responseRatio: 0.48,
+    onboarded: false,
+    region: 'us',
+  },
+  account: null, // { username, fullName, email }
+  hasKey: false,
+  workspaces: [LOCAL_WS],
+  ws: null,
+  tabs: [],
+  activeTab: null,
+  history: [],
+  syncing: false,
+  syncError: null,
+  lastSync: null,
+};
+
+// ---------- events ----------
+const listeners = new Map();
+export function on(evt, fn) { (listeners.get(evt) || listeners.set(evt, new Set()).get(evt)).add(fn); }
+export function emit(...evts) { for (const e of evts) listeners.get(e)?.forEach((fn) => fn()); }
+
+// ---------- persistence ----------
+const timers = {};
+function persist(name, getValue, ms = 300) {
+  clearTimeout(timers[name]);
+  timers[name] = setTimeout(() => bridge.write(name, getValue()).catch((e) => console.error('save failed', name, e)), ms);
+}
+export const saveSettings = () => { region.value = state.settings.region || 'us'; persist('settings', () => state.settings); };
+export const saveWorkspace = (ws = state.ws) => { if (ws) persist(`ws-${ws.id}`, () => ws); };
+export const saveTabs = () => persist('tabs', () => ({ tabs: state.tabs.map(serialTab), activeTab: state.activeTab }), 500);
+export const saveHistory = () => persist('history', () => state.history, 800);
+
+function serialTab(t) {
+  // Responses can be large; keep them out of the saved tab list.
+  const { response, running, ...rest } = t;
+  return rest;
+}
+
+export async function init() {
+  const [settings, tabs, history, account, hasKey, workspaces] = await Promise.all([
+    bridge.read('settings'), bridge.read('tabs'), bridge.read('history'), bridge.read('account'), bridge.hasApiKey().catch(() => false), bridge.read('workspaces'),
+  ]);
+  Object.assign(state.settings, settings || {});
+  region.value = state.settings.region || 'us';
+  state.history = history || [];
+  state.account = account || null;
+  state.hasKey = !!hasKey;
+  if (workspaces?.length) state.workspaces = [...workspaces.filter((w) => w.id !== 'local'), LOCAL_WS];
+  if (tabs?.tabs) { state.tabs = tabs.tabs; state.activeTab = tabs.activeTab; }
+  const wsId = state.settings.wsId && state.workspaces.some((w) => w.id === state.settings.wsId) ? state.settings.wsId : state.workspaces[0].id;
+  await openWorkspace(wsId, { refresh: false });
+  state.ready = true;
+  emit('all');
+  if (state.hasKey) refreshAll().catch(() => {});
+}
+
+// ---------- account ----------
+
+export async function connectAccount(key) {
+  const me = await bridge.setApiKey(key);
+  state.hasKey = true;
+  state.account = { username: me.user?.username, fullName: me.user?.fullName, email: me.user?.email };
+  await bridge.write('account', state.account);
+  state.settings.onboarded = true;
+  saveSettings();
+  await refreshAll();
+}
+
+export async function disconnectAccount() {
+  await bridge.deleteApiKey();
+  state.hasKey = false;
+  state.account = null;
+  await bridge.write('account', null);
+  emit('all');
+}
+
+// ---------- workspaces ----------
+
+function emptyWs(meta) {
+  return { id: meta.id, name: meta.name, type: meta.type, collections: [], environments: [], globals: { values: [], overlay: {}, dirty: false }, colOverlays: {} };
+}
+
+export async function openWorkspace(id, { refresh = true } = {}) {
+  const meta = state.workspaces.find((w) => w.id === id) || LOCAL_WS;
+  const saved = await bridge.read(`ws-${id}`);
+  state.ws = saved || emptyWs(meta);
+  for (const c of state.ws.collections) delete c.pushing; // never resume mid-push state
+  state.ws.name = meta.name;
+  state.ws.globals = state.ws.globals || { values: [], overlay: {}, dirty: false };
+  state.ws.colOverlays = state.ws.colOverlays || {};
+  state.settings.wsId = id;
+  saveSettings();
+  emit('sidebar', 'env', 'workspace');
+  if (refresh && id !== 'local' && state.hasKey) await refreshWorkspace().catch(() => {});
+}
+
+export const isCloud = () => state.ws && state.ws.id !== 'local';
+
+export async function refreshAll() {
+  if (!state.hasKey) return;
+  state.syncing = true;
+  state.syncError = null;
+  emit('sync');
+  try {
+    const list = await cloud.listWorkspaces();
+    state.workspaces = [...list, LOCAL_WS];
+    bridge.write('workspaces', list);
+    const preferred = list.find((w) => w.type === 'personal') || list[0];
+    const currentGone = !state.workspaces.some((w) => w.id === state.ws?.id);
+    const neverChose = state.ws?.id === 'local' && !state.settings.wsChosen && !state.ws.collections.length;
+    if (preferred && (currentGone || neverChose)) await openWorkspace(preferred.id, { refresh: false });
+    emit('workspace');
+    if (isCloud()) await refreshWorkspace(true);
+  } catch (e) {
+    state.syncError = String(e);
+    throw e;
+  } finally {
+    state.syncing = false;
+    emit('sync');
+  }
+}
+
+// ---------- push queue ----------
+// Pushes for the same collection or environment run one at a time, so two
+// quick saves can never reach Postman out of order or create an item twice.
+const chains = new WeakMap();
+function queued(target, fn) {
+  const prev = chains.get(target) || Promise.resolve();
+  const run = prev.catch(() => {}).then(fn);
+  chains.set(target, run);
+  return run;
+}
+const settle = (target) => (chains.get(target) || Promise.resolve()).catch(() => {});
+
+/** Pull the collection and environment lists, then any changed items we already use. */
+export async function refreshWorkspace(inner = false) {
+  if (!isCloud() || !state.hasKey) return;
+  const ws = state.ws;
+  if (!inner) { state.syncing = true; state.syncError = null; emit('sync'); }
+  try {
+    // Let in-flight pushes finish so a half-created collection isn't listed twice.
+    await Promise.all([...ws.collections, ...ws.environments].map(settle));
+    const [cols, envs, globals] = await Promise.all([
+      cloud.listCollections(ws.id),
+      cloud.listEnvironments(ws.id),
+      cloud.getGlobals(ws.id).catch(() => undefined), // undefined = couldn't check this time
+    ]);
+    if (state.ws !== ws) return; // switched away meanwhile
+
+    // Collections
+    const byUid = Object.fromEntries(ws.collections.map((c) => [c.uid, c]));
+    const next = [];
+    const toPull = [];
+    for (const r of cols) {
+      const local = byUid[r.uid];
+      if (!local) {
+        next.push({ uid: r.uid, name: r.name, updatedAt: r.updatedAt, data: null, dirty: false });
+        continue;
+      }
+      if (!local.dirty) local.name = r.name;
+      if (r.updatedAt !== local.updatedAt) {
+        if (local.dirty) local.conflict = r.updatedAt;
+        else if (local.data) toPull.push(local);
+        else local.updatedAt = r.updatedAt;
+      }
+      next.push(local);
+      delete byUid[r.uid];
+    }
+    // Deleted in Postman: drop unless there are unsaved local changes.
+    for (const gone of Object.values(byUid)) if (gone.dirty || gone.pendingCreate) { gone.deletedRemotely = !gone.pendingCreate; next.push(gone); }
+    ws.collections = next;
+
+    // Environments
+    const envByUid = Object.fromEntries(ws.environments.map((e) => [e.uid, e]));
+    const envNext = envs.map((r) => {
+      const local = envByUid[r.uid];
+      delete envByUid[r.uid];
+      if (!local) return { uid: r.uid, name: r.name, updatedAt: r.updatedAt, data: null, overlay: {}, dirty: false };
+      if (r.updatedAt !== local.updatedAt) {
+        if (local.dirty) local.conflict = r.updatedAt;
+        else { local.stale = true; local.updatedAt = r.updatedAt; }
+      }
+      if (!local.dirty) local.name = r.name;
+      return local;
+    });
+    for (const gone of Object.values(envByUid)) if (gone.dirty || gone.pendingCreate) envNext.push(gone);
+    ws.environments = envNext;
+
+    // Globals: null means this workspace doesn't offer them.
+    if (globals === null) ws.globals.unsupported = true;
+    else if (globals !== undefined) {
+      const snap = JSON.stringify(globals);
+      if (ws.globals.dirty) { if (ws.globals.loaded && snap !== ws.globals.remoteSnap) ws.globals.conflict = true; }
+      else { ws.globals.values = globals; ws.globals.remoteSnap = snap; }
+      ws.globals.loaded = true;
+      delete ws.globals.unsupported;
+    }
+
+    await Promise.all(toPull.map((c) => pullCollection(c, { ws })));
+    const active = activeEnvEntry();
+    if (active && (!active.data || active.stale) && !active.dirty) await pullEnvironment(active, { ws });
+
+    state.lastSync = Date.now();
+    saveWorkspace(ws);
+    emit('sidebar', 'env', 'tabs-refresh');
+  } catch (e) {
+    state.syncError = String(e);
+    throw e;
+  } finally {
+    if (!inner) { state.syncing = false; emit('sync'); }
+  }
+}
+
+// ---------- collections ----------
+
+export function collectionEntry(uid) { return state.ws?.collections.find((c) => c.uid === uid); }
+
+/** Download a collection. Unless `discard`, local edits made meanwhile are never overwritten. */
+export async function pullCollection(entry, { ws = state.ws, discard = false } = {}) {
+  const before = entry.localUpdatedAt;
+  const data = await cloud.getCollection(entry.uid);
+  if (!discard && (entry.dirty || entry.localUpdatedAt !== before)) {
+    // Edited while downloading: keep the local edits; flag only if Postman moved on too.
+    if (data.info?.updatedAt && data.info.updatedAt !== entry.updatedAt) entry.conflict = data.info.updatedAt;
+    saveWorkspace(ws);
+    emit('sidebar');
+    return entry;
+  }
+  entry.data = data;
+  entry.name = data.info?.name || entry.name;
+  entry.updatedAt = data.info?.updatedAt || entry.updatedAt;
+  entry.dirty = false;
+  delete entry.conflict;
+  delete entry.deletedRemotely;
+  saveWorkspace(ws);
+  emit('sidebar', 'tabs-refresh');
+  return entry;
+}
+
+export async function ensureCollection(entry) {
+  if (!entry.data && isCloud() && !entry.pendingCreate) await pullCollection(entry);
+  return entry.data;
+}
+
+export class ConflictError extends Error {
+  constructor(entry, kind = 'collection') { super(`"${entry.name}" was changed in Postman since you last synced.`); this.entry = entry; this.kind = kind; }
+}
+
+/** Mark a collection changed, persist it, and push if automatic sync is on. */
+export async function collectionChanged(entry, { push = state.settings.syncMode === 'auto' } = {}) {
+  entry.dirty = true;
+  entry.localUpdatedAt = Date.now() + Math.random(); // unique even within the same millisecond
+  if (entry.data?.info) entry.name = entry.data.info.name;
+  saveWorkspace();
+  emit('sidebar');
+  if (push && isCloud() && state.hasKey) return pushCollection(entry);
+}
+
+/**
+ * Upload a collection. `ws` is captured when the edit happened, so a delayed
+ * push still goes to the right workspace after you switch.
+ */
+export function pushCollection(entry, { force = false, ws = state.ws } = {}) {
+  return queued(entry, () => doPushCollection(entry, { force, ws }));
+}
+
+async function doPushCollection(entry, { force, ws }) {
+  if (ws.id === 'local' || !entry.data) return;
+  if (!entry.dirty && !entry.pendingCreate && !force) return; // an earlier queued push already sent it
+  entry.pushing = true;
+  emit('sidebar');
+  try {
+    if (entry.pendingCreate) {
+      const version = entry.localUpdatedAt;
+      const created = await cloud.createCollection(ws.id, entry.data);
+      const oldUid = entry.uid;
+      entry.uid = created.uid;
+      delete entry.pendingCreate;
+      remapCollectionUid(ws, oldUid, created.uid);
+      // Fetch what Postman stored so item ids and the version stamp match exactly.
+      const remote = await cloud.getCollection(created.uid);
+      const idMap = mapIds(entry.data.item || [], remote.item || []);
+      if (entry.localUpdatedAt === version) {
+        entry.data = remote;
+        entry.dirty = false;
+      } else {
+        // Edited while creating: keep the edits, adopt Postman's ids, push again later.
+        applyIdMap(entry.data.item || [], idMap);
+      }
+      entry.updatedAt = remote.info?.updatedAt || (await cloud.listCollections(ws.id)).find((c) => c.uid === entry.uid)?.updatedAt || null;
+      remapItemIds(ws, entry.uid, idMap);
+    } else {
+      if (!force) {
+        const remote = (await cloud.listCollections(ws.id)).find((c) => c.uid === entry.uid);
+        if (!remote) { entry.deletedRemotely = true; throw new Error(`"${entry.name}" no longer exists in Postman. Export it from the ⋯ menu to keep a copy.`); }
+        if (remote.updatedAt !== entry.updatedAt) { entry.conflict = remote.updatedAt; throw new ConflictError(entry); }
+      }
+      const version = entry.localUpdatedAt;
+      await cloud.putCollection(entry.uid, entry.data);
+      const after = (await cloud.listCollections(ws.id)).find((c) => c.uid === entry.uid);
+      entry.updatedAt = after?.updatedAt || entry.updatedAt;
+      if (entry.localUpdatedAt === version) entry.dirty = false; // otherwise newer edits still need pushing
+    }
+    delete entry.conflict;
+  } finally {
+    entry.pushing = false;
+    saveWorkspace(ws);
+    emit('sidebar', 'sync');
+  }
+}
+
+/** Pair items of two trees with the same shape (what we sent vs what Postman stored). */
+function mapIds(localItems, remoteItems, map = {}) {
+  localItems.forEach((l, i) => {
+    const r = remoteItems[i];
+    if (!r) return;
+    if (l.id && r.id && l.id !== r.id) map[l.id] = r.id;
+    if (l.item && r.item) mapIds(l.item, r.item, map);
+  });
+  return map;
+}
+function applyIdMap(items, map) {
+  for (const it of items) { if (map[it.id]) it.id = map[it.id]; if (it.item) applyIdMap(it.item, map); }
+}
+
+/** Tabs, overlays and expanded folders refer to collections by uid. */
+function remapCollectionUid(ws, oldUid, newUid) {
+  if (ws.colOverlays[oldUid]) { ws.colOverlays[newUid] = ws.colOverlays[oldUid]; delete ws.colOverlays[oldUid]; }
+  const exp = state.settings.expanded?.[ws.id];
+  if (exp) { const i = exp.indexOf(oldUid); if (i >= 0) exp[i] = newUid; }
+  for (const t of state.tabs) if (t.ws === ws.id && t.ref?.col === oldUid) t.ref.col = newUid;
+  saveSettings();
+  saveTabs();
+}
+
+function remapItemIds(ws, uid, map) {
+  if (!Object.keys(map).length) return;
+  for (const t of state.tabs) {
+    if (t.ws !== ws.id || t.ref?.col !== uid || !map[t.ref.item]) continue;
+    t.ref.item = map[t.ref.item];
+    if (t.draft?.id) t.draft.id = t.ref.item;
+  }
+  const exp = state.settings.expanded?.[ws.id];
+  if (exp) exp.forEach((k, i) => { if (map[k]) exp[i] = map[k]; });
+  saveSettings();
+  saveTabs();
+  emit('tabs');
+}
+
+export async function createCollection(name) {
+  const data = newCollection(name);
+  const entry = { uid: `local-${uuid()}`, name, data, dirty: !!isCloud(), updatedAt: null, pendingCreate: isCloud(), localUpdatedAt: Date.now() };
+  state.ws.collections.push(entry);
+  saveWorkspace();
+  emit('sidebar');
+  if (isCloud() && state.hasKey) await pushCollection(entry);
+  return entry;
+}
+
+export function removeLocalCollection(entry) {
+  state.ws.collections = state.ws.collections.filter((c) => c !== entry);
+  saveWorkspace();
+  emit('sidebar');
+}
+
+export async function importFromFile() {
+  const file = await bridge.openTextFile();
+  if (!file) return null;
+  let json;
+  try { json = JSON.parse(file.content); } catch { throw new Error("That file isn't valid JSON."); }
+  const parsed = normaliseImport(json);
+  if (parsed.kind === 'environment') {
+    const env = { uid: `local-${uuid()}`, name: parsed.data.name, data: { name: parsed.data.name, values: parsed.data.values || [] }, overlay: {}, dirty: true, pendingCreate: isCloud() };
+    state.ws.environments.push(env);
+    await environmentChanged(env);
+    return { kind: 'environment', name: env.name };
+  }
+  const data = freshIds(parsed.data); // importing the same file twice must not share ids
+  delete data.info.updatedAt;
+  const entry = { uid: `local-${uuid()}`, name: data.info.name, data, dirty: !!isCloud(), updatedAt: null, pendingCreate: isCloud(), localUpdatedAt: Date.now() };
+  state.ws.collections.push(entry);
+  saveWorkspace();
+  emit('sidebar');
+  if (isCloud() && state.hasKey) await pushCollection(entry);
+  return { kind: 'collection', name: entry.name };
+}
+
+export async function exportCollection(entry) {
+  await ensureCollection(entry);
+  const name = `${(entry.name || 'collection').replace(/[^\w.-]+/g, '_')}.postman_collection.json`;
+  return bridge.saveTextFile(name, JSON.stringify(forExport(entry.data), null, 2));
+}
+
+export async function exportEnvironment(env) {
+  await ensureEnvironment(env);
+  const out = { id: env.data.id || uuid(), name: env.name, values: env.data.values, _postman_variable_scope: 'environment' };
+  return bridge.saveTextFile(`${env.name.replace(/[^\w.-]+/g, '_')}.postman_environment.json`, JSON.stringify(out, null, 2));
+}
+
+// ---------- environments ----------
+
+export function activeEnvEntry() {
+  const uid = state.settings.envByWs[state.ws?.id];
+  return state.ws?.environments.find((e) => e.uid === uid) || null;
+}
+
+export async function setActiveEnv(uid) {
+  state.settings.envByWs[state.ws.id] = uid || null;
+  saveSettings();
+  const env = activeEnvEntry();
+  if (env) await ensureEnvironment(env).catch(() => {});
+  emit('env');
+}
+
+export async function pullEnvironment(env, { ws = state.ws, discard = false } = {}) {
+  const wasDirty = env.dirty;
+  const data = await cloud.getEnvironment(env.uid);
+  if (!discard && (wasDirty || env.dirty)) { env.conflict = true; saveWorkspace(ws); emit('sidebar'); return; }
+  env.data = { id: data.id, name: data.name, values: data.values || [] };
+  env.name = data.name;
+  env.dirty = false;
+  delete env.stale;
+  delete env.conflict;
+  saveWorkspace(ws);
+  emit('env', 'sidebar', 'tabs-refresh');
+}
+
+export async function ensureEnvironment(env) {
+  if ((!env.data || env.stale) && isCloud() && !env.pendingCreate && !env.dirty) await pullEnvironment(env);
+  env.overlay = env.overlay || {};
+  return env.data;
+}
+
+export async function environmentChanged(env, { push = state.settings.syncMode === 'auto' } = {}) {
+  env.dirty = true;
+  env.localUpdatedAt = Date.now() + Math.random();
+  saveWorkspace();
+  emit('env', 'sidebar');
+  if (push && isCloud() && state.hasKey) return pushEnvironment(env);
+}
+
+export function pushEnvironment(env, { force = false, ws = state.ws } = {}) {
+  return queued(env, async () => {
+    if (ws.id === 'local' || !env.data) return;
+    if (!env.dirty && !env.pendingCreate && !force) return;
+    const version = env.localUpdatedAt;
+    if (env.pendingCreate) {
+      const created = await cloud.createEnvironment(ws.id, env.data);
+      const old = env.uid;
+      env.uid = created.uid;
+      delete env.pendingCreate;
+      if (state.settings.envByWs[ws.id] === old) { state.settings.envByWs[ws.id] = env.uid; saveSettings(); }
+      for (const t of state.tabs) if (t.ws === ws.id && t.ref?.env === old) t.ref.env = env.uid;
+      saveTabs();
+    } else {
+      if (!force) {
+        const remote = (await cloud.listEnvironments(ws.id)).find((e) => e.uid === env.uid);
+        if (!remote) throw new Error(`"${env.name}" no longer exists in Postman. Export it from the ⋯ menu to keep a copy.`);
+        if (env.updatedAt && remote.updatedAt !== env.updatedAt) { env.conflict = remote.updatedAt; saveWorkspace(ws); emit('sidebar'); throw new ConflictError(env, 'environment'); }
+      }
+      await cloud.putEnvironment(env.uid, { name: env.name, values: env.data.values });
+    }
+    const after = (await cloud.listEnvironments(ws.id)).find((e) => e.uid === env.uid);
+    env.updatedAt = after?.updatedAt || env.updatedAt;
+    if (env.localUpdatedAt === version) env.dirty = false;
+    delete env.conflict;
+    saveWorkspace(ws);
+    emit('env', 'sidebar');
+  });
+}
+
+export async function createEnvironment(name) {
+  const env = { uid: `local-${uuid()}`, name, data: { name, values: [] }, overlay: {}, dirty: true, pendingCreate: isCloud() };
+  state.ws.environments.push(env);
+  await environmentChanged(env);
+  return env;
+}
+
+export function pushGlobals({ force = false, ws = state.ws } = {}) {
+  const g = ws.globals;
+  return queued(g, async () => {
+    if (ws.id !== 'local') {
+      if (g.unsupported) throw new Error("This workspace doesn't support globals through the Postman API.");
+      if (!g.loaded) throw new Error("Dispatch hasn't been able to load this workspace's globals from Postman yet, so it won't overwrite them. Sync and try again.");
+      if (!force) {
+        const remote = await cloud.getGlobals(ws.id);
+        if (remote && JSON.stringify(remote) !== g.remoteSnap) { g.conflict = true; emit('sidebar'); throw new ConflictError({ name: 'Globals' }, 'globals'); }
+      }
+      const res = await cloud.putGlobals(ws.id, g.values);
+      g.remoteSnap = JSON.stringify(res?.values || g.values);
+    }
+    g.dirty = false;
+    delete g.conflict;
+    saveWorkspace(ws);
+    emit('env', 'sidebar');
+  });
+}
+
+/** Give every item and example a new id (for imports). */
+function freshIds(collection) {
+  const walkItems = (items) => (items || []).forEach((it) => {
+    it.id = uuid();
+    delete it.uid;
+    (it.response || []).forEach((r) => { r.id = uuid(); delete r.uid; });
+    walkItems(it.item);
+  });
+  walkItems(collection.item);
+  if (collection.info) collection.info._postman_id = uuid();
+  return collection;
+}
+
+/** Called when scripts change current values; these stay local, like Postman. */
+export function overlaysChanged() {
+  saveWorkspace();
+  emit('env-values');
+}
+
+// ---------- history ----------
+
+export function addHistory(entry) {
+  state.history.unshift({ id: uuid(), ts: Date.now(), ...entry });
+  if (state.history.length > 300) state.history.length = 300;
+  saveHistory();
+  emit('history');
+}
+
+export function clearHistory() {
+  state.history = [];
+  saveHistory();
+  emit('history');
+}
+
+export { clone, ensureIds };

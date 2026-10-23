@@ -1,0 +1,36 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: |
+          npm test
+          cd src-tauri && cargo test
+
+      - name: Build universal app
+        run: npx tauri build --target universal-apple-darwin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dispatch-macOS
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
