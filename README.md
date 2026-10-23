@@ -46,8 +46,7 @@ Download from [Releases](https://github.com/Roqak/dispatch/releases/latest):
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS Apple Silicon | `Dispatch_0.1.0_aarch64.dmg` | mac OS 13.0+; unsigned builds need right-click → Open |
-| macOS Intel | `Dispatch_0.1.0_x64.dmg` | macOS 13.0+ |
+| macOS Apple Silicon & Intel | `Dispatch_0.1.0_universal.dmg` | macOS 13.0+; unsigned builds need right-click → Open |
 | Windows | `Dispatch_0.1.0_x64-setup.exe` | Windows 10/11 |
 | Debian/Ubuntu | `Dispatch_0.1.0_amd64.deb` | needs `libwebkit2gtk-4.1-0` / `libgtk-3-0` (installed by most desktop setups) |
 | Fedora/RHEL | `Dispatch-0.1.0-1.x86_64.rpm` | same |
