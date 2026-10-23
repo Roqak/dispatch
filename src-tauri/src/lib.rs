@@ -86,10 +86,14 @@ fn migrate_legacy_key(app: AppHandle, profile_id: String) -> Result<bool, String
 }
 
 /// Releases freed-but-retained arena memory (call after tabs close).
+/// glibc-specific; other platforms' allocators trim themselves.
 #[tauri::command]
 fn trim_memory(app: AppHandle) -> bool {
     let _ = &app;
+    #[cfg(target_os = "linux")]
     unsafe { libc::malloc_trim(0) != 0 }
+    #[cfg(not(target_os = "linux"))]
+    false
 }
 
 // ---------- Generic secret slots (e.g. client-certificate passwords) ----------
@@ -238,10 +242,15 @@ mod test_hook {
             };
             // /trim releases freed-but-retained arena memory (benchmark/drain aid).
             if request_line.starts_with("POST /trim") {
-                let freed = unsafe { libc::malloc_trim(0) };
-                let msg = format!("trimmed={freed}");
-                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", msg.len()).as_bytes())
-                    .and_then(|_| stream.write_all(msg.as_bytes()));
+                #[cfg(target_os = "linux")]
+                {
+                    let freed = unsafe { libc::malloc_trim(0) };
+                    let msg = format!("trimmed={freed}");
+                    let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", msg.len()).as_bytes())
+                        .and_then(|_| stream.write_all(msg.as_bytes()));
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\ntrimmed=0");
                 continue;
             }
             // Page → bench result channel: POST /out appends the body to a file.
