@@ -58,9 +58,11 @@ Dispatch starts you in a built-in **local profile** — everything stays on this
 
 Add any Postman account as a **profile**: Settings → Profiles → Add Postman profile (or from the welcome screen).
 
-1. In Postman, click your avatar, then **Settings → API keys → Generate API key**.
+1. In Postman, click your avatar, then **Settings → API keys → Generate API key**, and copy the key. It starts with `PMAK-` and is only shown once.
 2. Paste the key into Dispatch. Dispatch checks the key with Postman before saving it.
 3. If that Postman team is hosted in the EU region, tick the EU box when adding the profile.
+
+The full walkthrough, including expiry, the EU region, what to do when Postman rejects a key, and how to revoke one, is in [Getting a Postman API key](docs/postman-api-key.md).
 
 Each profile keeps its own key (macOS Keychain; a `0600` file in the app data directory on Linux/Windows), its own US/EU region and its own workspace list. Switching happens from the footer at the bottom of the sidebar; every profile remembers the workspace it was last on. Rename, region toggle and disconnect live under each profile's ⋯ menu in Settings. Disconnecting removes that profile's key but keeps downloaded collections.
 

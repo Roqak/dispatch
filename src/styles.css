@@ -396,6 +396,12 @@ pre.body.wrap { white-space: pre-wrap; word-break: break-all; }
 .welcome ol { padding-left: 20px; color: var(--text-2); margin: 0 0 16px; }
 .welcome ol li { margin-bottom: 4px; }
 .welcome .row { margin-top: 10px; }
+.key-help { margin: 0 0 14px; color: var(--text-2); }
+.key-help summary { cursor: pointer; color: var(--text); font-weight: 500; margin-bottom: 8px; }
+.key-help ol { padding-left: 20px; margin: 0 0 8px; }
+.key-help ol li { margin-bottom: 4px; }
+.key-help .hint { margin: 0; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .welcome .err-text { color: var(--err); font-size: 12px; margin-top: 8px; min-height: 18px; user-select: text; }
 .logo { width: 46px; height: 46px; }
 .empty-main { text-align: center; color: var(--text-2); }

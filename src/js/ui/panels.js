@@ -199,6 +199,26 @@ export function saveAsDialog(defaultName) {
   });
 }
 
+// ---------- Postman API key help ----------
+
+const API_KEYS_URL = 'https://go.postman.co/settings/me/api-keys';
+const KEY_GUIDE_URL = 'https://github.com/Roqak/dispatch/blob/main/docs/postman-api-key.md';
+const openLink = (url) => bridge.openUrl(url).catch(() => { navigator.clipboard.writeText(url); toast(`Couldn't open your browser, so the link is on your clipboard: ${url}`); });
+
+/** Steps for creating a Postman API key, with a button to Postman's API keys page. */
+function apiKeyHelp({ open = false } = {}) {
+  return h('details', { class: 'key-help', open },
+    h('summary', null, 'How do I get an API key?'),
+    h('ol', null,
+      h('li', null, 'In Postman, click your avatar → ', h('b', null, 'Settings'), ' → ', h('b', null, 'API keys'), '. ',
+        h('button', { class: 'link-btn', onclick: () => openLink(API_KEYS_URL) }, 'Open the API keys page')),
+      h('li', null, 'Click ', h('b', null, 'Generate API key'), ', name it "Dispatch", and copy the key. It starts with ', h('span', { class: 'mono' }, 'PMAK-'), ', and Postman only shows it once.'),
+      h('li', null, 'Paste it here. If your team uses Postman\'s EU region, tick the EU box first.')),
+    h('p', { class: 'hint' }, 'Key rejected, or no Generate button? ',
+      h('button', { class: 'link-btn', onclick: () => openLink(KEY_GUIDE_URL) }, 'Read the full guide'),
+      ' for expiry, regions, errors and revoking a key.'));
+}
+
 // ---------- settings ----------
 
 /** Shared "connect another Postman account" dialog. Resolves with the new profile. */
@@ -226,7 +246,7 @@ export function addProfileDialog(then) {
         h('label', null, 'API key'), h('div', { class: 'row' }, keyInput, connectBtn),
         h('label', null, 'Region'), h('div', null, h('label', { class: 'check hint', style: { margin: 0 } }, eu, ' My Postman team is hosted in the EU region'))),
       errLine,
-      h('p', { class: 'hint' }, 'In Postman: click your avatar → Settings → API keys → Generate API key.'));
+      apiKeyHelp());
     setTimeout(() => keyInput.focus(), 50);
   };
   render();
@@ -305,10 +325,11 @@ export function renderWelcome(root) {
   const keyInput = h('input', { class: 'input grow', type: 'password', placeholder: 'Paste your Postman API key (PMAK-…)' });
   const nameInput = h('input', { class: 'input grow', placeholder: 'Profile name (optional — defaults to the Postman username)' });
   const err = h('div', { class: 'err-text' });
+  const eu = h('input', { type: 'checkbox', checked: state.settings.region === 'eu' });
   const btn = h('button', { class: 'btn primary', onclick: async () => {
     btn.disabled = true; btn.textContent = 'Connecting…'; err.textContent = '';
     try {
-      const profile = await S.addProfile({ key: keyInput.value, name: nameInput.value, region: state.settings.region === 'eu' ? 'eu' : 'us' });
+      const profile = await S.addProfile({ key: keyInput.value, name: nameInput.value, region: eu.checked ? 'eu' : 'us' });
       toast(`Connected. "${profile.name}" profiles are syncing.`);
       emit('all');
     }
@@ -319,12 +340,10 @@ export function renderWelcome(root) {
     logoSvg(),
     h('h1', null, 'Connect your Postman account'),
     h('p', { class: 'lead' }, 'Dispatch syncs your workspaces, collections and environments through Postman\'s official API, so your team keeps working in Postman while you use something lighter. You can also work entirely on this device — add accounts later, and switch between them any time.'),
-    h('ol', null,
-      h('li', null, 'In Postman, click your avatar → ', h('b', null, 'Settings'), ' → ', h('b', null, 'API keys'), '.'),
-      h('li', null, 'Click ', h('b', null, 'Generate API key'), ', name it "Dispatch", and copy it.'),
-      h('li', null, 'Paste it below. Each account you add becomes a profile with its own key.')),
+    apiKeyHelp({ open: true }),
     h('div', { class: 'row', style: { marginBottom: '6px' } }, nameInput),
     h('div', { class: 'row' }, keyInput, btn),
+    h('label', { class: 'check hint', style: { marginTop: '8px' } }, eu, ' My Postman team is hosted in the EU region'),
     err,
     h('div', { class: 'row', style: { marginTop: '18px' } },
       h('button', { class: 'btn ghost', onclick: () => { state.settings.onboarded = true; S.saveSettings(); emit('all'); } }, 'Start on this device, without Postman'),

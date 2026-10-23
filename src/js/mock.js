@@ -136,6 +136,7 @@ export const mockBridge = {
   async pickFilePath() { return '/Users/demo/Desktop/receipt.pdf'; },
   async saveTextFile() { return null; },
   async saveBinaryFile() { return null; },
+  async openUrl(url) { globalThis.open(url, '_blank', 'noopener'); },
 };
 
 function safeJson(s) { try { return JSON.parse(s); } catch { return s; } }

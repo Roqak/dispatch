@@ -33,6 +33,7 @@ export const bridge = isDesktop
       pickFilePath: () => invoke('pick_file_path'),
       saveTextFile: (defaultName, content) => invoke('save_text_file', { defaultName, content }),
       saveBinaryFile: (defaultName, base64Content) => invoke('save_binary_file', { defaultName, base64Content }),
+      openUrl: (url) => globalThis.__TAURI__.opener.openUrl(url),
     }
   : mock.mockBridge;
 
