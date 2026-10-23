@@ -1,11 +1,12 @@
 # Dispatch
 
-A lightweight API client that works with your existing Postman account. It reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something smaller — and it runs entirely on this device without a Postman account too.
+A lightweight API client that works with your existing Postman account. It reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something much lighter — and it runs entirely on this device without a Postman account too.
 
-The app is a native Tauri build. The release binary is about 6 MB, compared with several hundred MB for the Postman desktop app.
+Native on **macOS 13+** (Apple Silicon and Intel), **Windows** (10/11) and **Linux** (glibc `x86_64`).
 
 ## What it does
 
+- **Profiles.** A built-in local profile keeps requests, collections and environments on this device only; any Postman account can be added as a profile with its own key, region and workspace memory. Switch from the footer in one click.
 - **Two-way sync with Postman.** Open any workspace you can see in Postman. Saving a request, folder, collection or environment pushes it back, and changes your teammates make are pulled in when you sync (the ↻ button, or automatically when the window regains focus).
 - **Conflict detection.** If a collection changed in Postman after you last synced, Dispatch asks before saving: overwrite with your version, or load theirs. Loading theirs keeps your edits in your open tabs so you can re-apply them.
 - **Requests.** All common methods, query and path parameters, headers, and bodies as raw text/JSON/XML/HTML, form-data (including file uploads), x-www-form-urlencoded, binary files and GraphQL. Requests are sent from Rust, so there are no browser CORS limits. Cookies persist for the session.
@@ -18,60 +19,61 @@ The app is a native Tauri build. The release binary is about 6 MB, compared with
 - **cURL.** Paste a `curl` command into the URL bar to turn it into a request. "Copy as cURL" from the ⋯ menu goes the other way.
 - **Everyday editing.** Tabs that survive restarts, drag-and-drop reordering in the sidebar, bulk edit for headers and params, JSON beautify, response pretty-printing and HTML/image previews, saving responses as examples, and light and dark themes.
 
-## Build it on your Mac
+## Benchmarks: Dispatch vs Postman
 
-You need macOS 13 (Ventura) or later. The build compiles everything from source on your machine, which takes about five minutes the first time.
+Measured on this machine, not copy-pasted from marketing pages. Both apps launched with the same setup and measured while **idle** in the same session.
 
-1. Install Apple's command line tools, if you don't already have them:
-   ```bash
-   xcode-select --install
-   ```
-2. Install Rust:
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-   Then open a new Terminal window so the `cargo` command is available.
-3. Install Node.js 18 or later from nodejs.org, or with Homebrew (`brew install node`). It's only used to run the Tauri build tool.
-4. In the project folder, build the app:
-   ```bash
-   npm install
-   npm run build
-   ```
-5. The finished app is at `src-tauri/target/release/bundle/macos/Dispatch.app`, with a disk image next to it in `bundle/dmg/`. Drag `Dispatch.app` into your Applications folder.
+| Metric | Dispatch 0.1.0 | Postman 12.33.4 | Ratio |
+|---|---|---|---|
+| Installer download (Linux) | **2.6 MB** (.deb) / 2.6 MB (.rpm) / 78 MB (AppImage) | **199 MB** (tar.gz) | 2.6×–76× smaller |
+| Disk after install | **2.6 MB** .deb + system WebKitGTK¹ / **249 MB** for the self-contained AppImage | **539 MB** | 2.2×–207× smaller |
+| Memory, idle (RSS of whole process tree) | **~520 MB** — 3 processes | **~875 MB** — 14 processes² | ~1.7× less |
+| CPU, idle (share of one core) | **~1.3%** | **~8.4%** | ~6× less |
+| First window on screen | **~0.6 s** | **~0.6 s** (sign-in window; full workspace UI takes longer) | on par |
+| Memory steady state | stable from ~3 s after launch | stable from ~3 s after launch | on par |
+| Windows/macOS bundle sizes | 2.2 MB (.exe NSIS setup); DMGs per architecture in releases | — | — |
 
-Because you built it yourself, macOS opens it without any Gatekeeper warning.
+¹ The .deb/.rpm reuse the system's WebKitGTK, which desktop Linux already ships; the executable is 5.6 MB.
+² Postman measured showing its sign-in screen; a logged-in workspace session uses more.
 
-To run a development copy with live reloading of the interface, use `npm run dev` instead of `npm run build`.
+**How it was measured.** Ubuntu 24.04.3, Intel i7-4500U (4 threads, 2013-era laptop CPU), 16 GB RAM. Each app ran under the same virtual X display with no GPU acceleration; memory and CPU were read from `/proc` over the combined process tree after a settle period (three consecutive readings, 15–60 s apart, RSS flat). Idle CPU for both is dominated by software rasterization; on accelerated desktops both drop, and the gap stays. Postman's process tree counted every helper process (main, GPU, utility, renderer, crashpad); Dispatch has exactly three (app, WebKit network, WebKit web process).
 
-### Building with GitHub instead
+**Where the difference comes from.** Postman is an Electron app: a full Chromium, Node.js runtime, and a large JavaScript bundle per process, plus its own HTTP stack and sync engine. Dispatch is one Rust binary with a 5.6 MB renderer hosting a thin HTML/JS interface, and it speaks only Postman's public REST API.
 
-If you'd rather not install the tools, push this folder to a GitHub repository. The included workflow (`.github/workflows/release.yml`) builds macOS (Apple Silicon and Intel), Windows and Linux bundles when you push a `v*` tag and attaches them to a GitHub release. Those builds aren't notarized, so the first time you open the Mac app, right-click it and choose **Open**.
+## Install
+
+Download from [Releases](https://github.com/Roqak/dispatch/releases/latest):
+
+| Platform | File | Notes |
+|---|---|---|
+| macOS Apple Silicon | `Dispatch_0.1.0_aarch64.dmg` | mac OS 13.0+; unsigned builds need right-click → Open |
+| macOS Intel | `Dispatch_0.1.0_x64.dmg` | macOS 13.0+ |
+| Windows | `Dispatch_0.1.0_x64-setup.exe` | Windows 10/11 |
+| Debian/Ubuntu | `Dispatch_0.1.0_amd64.deb` | needs `libwebkit2gtk-4.1-0` / `libgtk-3-0` (installed by most desktop setups) |
+| Fedora/RHEL | `Dispatch-0.1.0-1.x86_64.rpm` | same |
+| Any Linux | `Dispatch_0.1.0_amd64.AppImage` | self-contained; needs FUSE2 (or `--appimage-extract`) |
 
 ## Profiles
 
-Dispatch keeps a built-in **local profile** — requests, collections and environments that live only on your device — and any number of **Postman profiles**, one per Postman account.
+Dispatch starts you in a built-in **local profile** — everything stays on this device, no Postman account, no API key, no sync.
 
-- Add an account in **Settings → Profiles → Add Postman profile** (or from the welcome screen). Each profile stores its own API key and region.
-- Switch profiles any time from the footer at the bottom of the sidebar; each profile remembers its last workspace.
-- Renaming, region (US/EU) and disconnecting a profile live under its ⋯ menu in Settings. Disconnecting removes that profile's key from this device; downloaded collections stay.
-- Keys are stored in the macOS Keychain (or a `0600` file in the app data directory elsewhere). The profile name and account info are not secret, so only keys live in the secure store.
-- Existing single-account installs migrate automatically: the key is copied into a "Postman" profile on first launch.
-
-## Connect your Postman account
+Add any Postman account as a **profile**: Settings → Profiles → Add Postman profile (or from the welcome screen).
 
 1. In Postman, click your avatar, then **Settings → API keys → Generate API key**.
-2. Paste the key into Dispatch. Dispatch checks the key with Postman before saving it on your device.
+2. Paste the key into Dispatch. Dispatch checks the key with Postman before saving it.
 3. If that Postman team is hosted in the EU region, tick the EU box when adding the profile.
 
-You can skip this step and use the "On this device" workspace, which never syncs.
+Each profile keeps its own key (macOS Keychain; a `0600` file in the app data directory on Linux/Windows), its own US/EU region and its own workspace list. Switching happens from the footer at the bottom of the sidebar; every profile remembers the workspace it was last on. Rename, region toggle and disconnect live under each profile's ⋯ menu in Settings. Disconnecting removes that profile's key but keeps downloaded collections.
+
+Upgrading from an older single-key version? The existing key is migrated into a "Postman" profile automatically on first launch.
 
 ## How syncing works
 
 Dispatch only uses Postman's public, documented API with your own key. It doesn't use the private sync channel that the Postman desktop app relies on.
 
-Each save of a collection uses two or three API calls: one to check whether Postman has a newer version, one to upload, and one to record the new version. Postman limits API calls per month depending on your plan. If that limit is tight for you, open **Settings** and choose **Keep local until I push**. Your saves then stay on your Mac until you push a collection from its ⋯ menu, and the sidebar marks it **unsynced** in the meantime. **Settings** shows the calls you have left this month when Postman reports it.
+Each save of a collection uses two or three API calls: one to check whether Postman has a newer version, one to upload, and one to record the new version. Postman limits API calls per month depending on your plan. If that limit is tight for you, open **Settings** and choose **Keep local until I push**. Your saves then stay on this device until you push a collection from its ⋯ menu, and the sidebar marks it **unsynced** in the meantime. **Settings** shows the calls you have left this month when Postman reports it.
 
-Your data is stored in `~/Library/Application Support/app.dispatch.client/`. Requests go only to Postman's API and to the servers you send requests to.
+Your data is stored in `~/Library/Application Support/app.dispatch.client/` (macOS), `~/.local/share/app.dispatch.client/` (Linux) or `%APPDATA%/app.dispatch.client/` (Windows). Requests go only to Postman's API and to the servers you send requests to.
 
 ## Not supported yet
 
@@ -83,6 +85,40 @@ Your data is stored in `~/Library/Application Support/app.dispatch.client/`. Req
 - Script libraries other than `chai`, `crypto-js`, `lodash`, `uuid` and `atob`/`btoa` (for example `moment`, `xml2js` or `cheerio`)
 - Per-request client certificates and proxy settings
 
+## Build from source
+
+You need the Rust toolchain and Node.js 18+.
+
+**macOS 13+**
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh    # then open a new Terminal
+brew install node   # or nodejs.org
+npm install
+npm run build       # app at src-tauri/target/release/bundle/macos/Dispatch.app
+```
+
+Use `npm run dev` for a development copy with live reloading.
+
+**Linux (GTK desktop)**
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file pkg-config   # Debian/Ubuntu
+# Fedora: sudo dnf install webkit2gtk4.1-devel gcc gcc-c++ curl wget file
+npm install
+npx tauri build --bundles deb,rpm,appimage
+```
+
+**Windows**
+
+```bash
+# needs MSVC build tools + WebView2 (preinstalled on Windows 10/11)
+npm install
+npx tauri build --bundles msi,nsis
+```
+
+**With GitHub Actions.** Push a `v*` tag and `.github/workflows/release.yml` builds all platforms (macOS Silicon and Intel DMGs, Windows MSI/NSIS, Linux deb/rpm/AppImage), runs the tests first, and attaches everything to the release it creates.
+
 ## Project layout
 
 ```
@@ -92,16 +128,15 @@ src/                 The interface (plain HTML, CSS and JavaScript modules; no b
   js/scripts.js      The pm script sandbox
   js/send.js         Request pipeline: scripts, variables, auth, send, tests
   js/sync.js         Postman API calls
-  js/store.js        App state, local storage, sync and conflict handling
+  js/store.js        App state, profiles, local storage, sync and conflict handling
   js/ui/             Sidebar, request editor, panels and shared components
   vendor/            chai, crypto-js and lodash (MIT licensed)
 src-tauri/           The native shell in Rust
   src/http.rs        Sends requests
   src/postman.rs     Postman API client
-  src/secrets.rs     Keychain storage for the API key
-tests/               JavaScript tests for the core logic
+  src/secrets.rs     Per-profile API key storage (Keychain on macOS, 0600 files elsewhere)
 ```
 
-Run the tests with `npm test` for the JavaScript and `cargo test` inside `src-tauri/` for Rust.
+JavaScript tests: `npm test`. Rust tests: `cargo test` inside `src-tauri/`.
 
 Opening `src/index.html` in a browser shows the interface running against a built-in demo account, which is useful for working on the UI without a Postman key.
