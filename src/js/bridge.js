@@ -29,6 +29,7 @@ export const bridge = isDesktop
       migrateLegacyKey: (profileId) => invoke('migrate_legacy_key', { profileId }),
       secretGet: (key) => invoke('secret_get', { key }),
       secretPut: (key, value) => invoke('secret_put', { key, value }),
+      trimMemory: () => invoke('trim_memory'),
       read: (name) => invoke('store_read', { name }),
       write: (name, value) => invoke('store_write', { name, value }),
       openTextFile: () => invoke('open_text_file'),

@@ -101,6 +101,8 @@ export async function closeTab(id, { force = false } = {}) {
     state.activeTab = rest[Math.min(idx, rest.length - 1)]?.id || null;
   }
   S.saveTabs();
+  // Large response bodies leave freed arenas behind; hand them back now.
+  bridge.trimMemory().catch(() => {});
   emit('tabs', 'main');
 }
 

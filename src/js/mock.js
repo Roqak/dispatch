@@ -132,6 +132,7 @@ export const mockBridge = {
   async migrateLegacyKey(profileId) { const k = read('apikey'); if (!k) return false; write(`apikey:${profileId}`, k); return true; },
   async secretGet(key) { return read(key) ?? ''; },
   async secretPut(key, value) { if (value === '') { ls.removeItem(`dispatch:${key}`); return; } write(key, value); },
+  async trimMemory() {},
   async read(name) { return read(name); },
   async write(name, value) { write(name, value); },
   async openTextFile() { return null; },

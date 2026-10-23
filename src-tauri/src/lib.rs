@@ -85,6 +85,13 @@ fn migrate_legacy_key(app: AppHandle, profile_id: String) -> Result<bool, String
     secrets::legacy_copy_value(&data_dir(&app)?, safe_name(&profile_id)?)
 }
 
+/// Releases freed-but-retained arena memory (call after tabs close).
+#[tauri::command]
+fn trim_memory(app: AppHandle) -> bool {
+    let _ = &app;
+    unsafe { libc::malloc_trim(0) != 0 }
+}
+
 // ---------- Generic secret slots (e.g. client-certificate passwords) ----------
 
 #[tauri::command]
@@ -178,6 +185,7 @@ pub fn run() {
             migrate_legacy_key,
             secret_get,
             secret_put,
+            trim_memory,
             store_read,
             store_write,
             open_text_file,
@@ -185,6 +193,79 @@ pub fn run() {
             save_text_file,
             save_binary_file,
         ])
+        .setup(|app| {
+            // Optional evaluator endpoint for benchmarking the real UI:
+            // DISPATCH_TEST_HOOK=9944 runs a local-only HTTP server whose POST
+            // body is evaluated as JavaScript inside the main webview.
+            if let Some(Ok(port)) = std::env::var("DISPATCH_TEST_HOOK").ok().map(|v| v.parse::<u16>()) {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || test_hook::serve(handle, port));
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running Dispatch");
+}
+
+mod test_hook {
+    //! Benchmark-only: evaluates JS in the webview on request.
+    use std::io::{Read, Write};
+    use tauri::Manager;
+
+    pub fn serve(app: tauri::AppHandle, port: u16) {
+        let listener = match std::net::TcpListener::bind(("127.0.0.1", port)) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0u8; 65536];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            let request_line = text.lines().next().unwrap_or("");
+            let body = match text.split_once("\r\n\r\n") {
+                Some((headers, rest)) => {
+                    let len = headers
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                        .unwrap_or(0);
+                    if len > 0 { rest.as_bytes().get(..len.min(rest.len())).and_then(|s| std::str::from_utf8(s).ok()) } else { Some(rest) }
+                }
+                None => None,
+            };
+            let body = match body {
+                Some(b) => b.to_string(),
+                None => { let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"); continue; }
+            };
+            // /trim releases freed-but-retained arena memory (benchmark/drain aid).
+            if request_line.starts_with("POST /trim") {
+                let freed = unsafe { libc::malloc_trim(0) };
+                let msg = format!("trimmed={freed}");
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", msg.len()).as_bytes())
+                    .and_then(|_| stream.write_all(msg.as_bytes()));
+                continue;
+            }
+            // Page → bench result channel: POST /out appends the body to a file.
+            if request_line.starts_with("POST /out") && !body.is_empty() {
+                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/dispatch-hook-out").and_then(|mut f| writeln!(f, "{}", body));
+                let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+                continue;
+            }
+            let app2 = app.clone();
+            let js = body.clone();
+            let respond = move || {
+                match app2.get_webview_window("main") {
+                    Some(w) => {
+                        let r = w.eval(&js);
+                        let msg: &[u8] = if r.is_ok() { b"ok" } else { b"eval failed" };
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n").and_then(|_| stream.write_all(msg));
+                    }
+                    None => {
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nno webview");
+                    }
+                }
+            };
+            // eval must run on the main thread
+            let _ = app.run_on_main_thread(respond);
+        }
+    }
 }

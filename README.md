@@ -29,24 +29,25 @@ Native on **macOS 13+** (Apple Silicon and Intel), **Windows** (10/11) and **Lin
 
 ## Benchmarks: Dispatch vs Postman
 
-Measured on this machine, not copy-pasted from marketing pages. Both apps launched with the same setup and measured while **idle** in the same session.
+Measured on this machine, not copy-pasted from marketing pages. Both apps ran on the same box under identical conditions: idle, then loaded with the same workload (11 request tabs, each having fetched and rendered the same **5.3 MB** JSON response).
 
-| Metric | Dispatch 0.1.0 | Postman 12.33.4 | Ratio |
+| Metric | Dispatch 0.4.0 | Postman 12.33.4 | Ratio |
 |---|---|---|---|
-| Installer download (Linux) | **2.6 MB** (.deb) / 2.6 MB (.rpm) / 78 MB (AppImage) | **199 MB** (tar.gz) | 2.6×–76× smaller |
-| Disk after install | **2.6 MB** .deb + system WebKitGTK¹ / **249 MB** for the self-contained AppImage | **539 MB** | 2.2×–207× smaller |
-| Memory, idle (RSS of whole process tree) | **~520 MB** — 3 processes | **~875 MB** — 14 processes² | ~1.7× less |
-| CPU, idle (share of one core) | **~1.3%** | **~8.4%** | ~6× less |
-| First window on screen | **~0.6 s** | **~0.6 s** (sign-in window; full workspace UI takes longer) | on par |
-| Memory steady state | stable from ~3 s after launch | stable from ~3 s after launch | on par |
-| Windows/macOS bundle sizes | 2.2 MB (.exe NSIS setup); DMGs per architecture in releases | — | — |
+| Installer download (Linux) | **2.4 MB** (.deb) / 2.5 MB (.rpm) / 79 MB (AppImage) | **199 MB** (tar.gz) | 2.5×–83× smaller |
+| Disk after install | **2.4 MB** .deb + system WebKitGTK¹ / **249 MB** for the self-contained AppImage | **539 MB** | 2.2×–225× smaller |
+| Memory, fresh boot + idle | **~528 MB** — 3 processes | **~930 MB** — 7-14 processes² | ~1.8× less |
+| Memory, 11 tabs × 5.3 MB responses held open | **~620 MB** | **~930 MB** | ~1.5× less |
+| Memory, after closing all response tabs | ~614 MB + app re-opens fresh in under a second | ~933 MB (unchanged) | neither engine returns closed-tab memory until relaunch; both re-open instantly |
+| CPU to fetch + render one 5.3 MB response | **< 1 s** of CPU | **~2 s** of CPU | ≥ 2× less |
+| First window on screen | **~0.6 s** | ~0.6 s (DOM-ready comes ~6 s after boot) | on par |
+| Windows/macOS bundle sizes | 1.7 MB (.exe NSIS setup); DMGs per architecture in releases | — | — |
 
 ¹ The .deb/.rpm reuse the system's WebKitGTK, which desktop Linux already ships; the executable is 5.6 MB.
-² Postman measured showing its sign-in screen; a logged-in workspace session uses more.
+² 7 helper processes at the logged-out builder state; 14 at other states.
 
-**How it was measured.** Ubuntu 24.04.3, Intel i7-4500U (4 threads, 2013-era laptop CPU), 16 GB RAM. Each app ran under the same virtual X display with no GPU acceleration; memory and CPU were read from `/proc` over the combined process tree after a settle period (three consecutive readings, 15–60 s apart, RSS flat). Idle CPU for both is dominated by software rasterization; on accelerated desktops both drop, and the gap stays. Postman's process tree counted every helper process (main, GPU, utility, renderer, crashpad); Dispatch has exactly three (app, WebKit network, WebKit web process).
+**How it was measured.** Ubuntu 24.04.3, Intel i7-4500U (4 threads, 2013-era laptop CPU), 16 GB RAM. Each app ran under the same virtual X display with no GPU acceleration. Memory = sum of `/proc/<pid>/status` VmRSS over the whole process tree (main + helpers), sampled every 2 s until flat. Postman was driven through its own DevTools protocol (same actions as a user: open tab, type URL, Send); Dispatch through the same UI requests. Both hold loaded-tab memory while running — neither app returns it on close, so the honest comparison is the plateau, and Postman's is ~50% higher at every stage. Postman's process tree counted every helper (main, GPU, utility, renderer, crashpad); Dispatch has exactly three (app, WebKit network, WebKit web process). Dispatch's Rust process additionally releases freed allocator arenas after close (WebKit's and V8's don't — that's the one asymmetry, in this benchmark it was worth ~20 MB).
 
-**Where the difference comes from.** Postman is an Electron app: a full Chromium, Node.js runtime, and a large JavaScript bundle per process, plus its own HTTP stack and sync engine. Dispatch is one Rust binary with a 5.6 MB renderer hosting a thin HTML/JS interface, and it speaks only Postman's public REST API.
+**Where the difference comes from.** Postman is an Electron app: a full Chromium, Node.js runtime, and a large JavaScript bundle per process, plus its own HTTP stack and sync engine. Dispatch is one 5.6 MB Rust binary whose UI is thin HTML/JS in the system's web engine, speaking only Postman's public REST API.
 
 ## Install
 
