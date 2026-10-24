@@ -1,7 +1,10 @@
 {
   "name": "dispatch",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
+  "bin": {
+    "dispatch": "bin/dispatch.mjs"
+  },
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",

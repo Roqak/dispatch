@@ -216,6 +216,67 @@ export function duplicateItem(item) {
   return copy;
 }
 
+// ---------- Examples ----------
+
+/** Examples need a stable id for tabs too; hand-made or older ones may lack one. */
+export function exampleId(ex) {
+  if (!ex.id) ex.id = uuid();
+  return ex.id;
+}
+
+export function findExample(item, id) {
+  const list = item?.response || [];
+  const index = list.findIndex((r) => exampleId(r) === id);
+  return index < 0 ? null : { list, index, example: list[index] };
+}
+
+export function previewLanguage(contentType = '') {
+  const ct = contentType.toLowerCase();
+  if (ct.includes('json')) return 'json';
+  if (ct.includes('html')) return 'html';
+  if (ct.includes('xml')) return 'xml';
+  if (ct.includes('javascript')) return 'javascript';
+  return 'text';
+}
+
+/** A Postman example built from a response Dispatch received. */
+export function exampleFromResponse(request, res, name) {
+  return {
+    id: uuid(),
+    name: name || `${res.status} ${res.statusText || ''}`.trim(),
+    originalRequest: clone(request),
+    status: res.statusText || '',
+    code: res.status,
+    _postman_previewlanguage: previewLanguage(res.contentType),
+    header: (res.headers || []).map((x) => ({ key: x.key, value: x.value })),
+    cookie: [],
+    body: res.bodyText ?? '',
+  };
+}
+
+/** An empty example to fill in by hand ("Add example"). */
+export function newExample(request, name = 'New Example') {
+  return {
+    id: uuid(),
+    name,
+    originalRequest: clone(request) || { method: 'GET', header: [], url: parseUrl('') },
+    status: 'OK',
+    code: 200,
+    _postman_previewlanguage: 'json',
+    header: [{ key: 'Content-Type', value: 'application/json' }],
+    cookie: [],
+    body: '',
+  };
+}
+
+export function duplicateExample(ex) {
+  const copy = clone(ex);
+  copy.id = uuid();
+  delete copy.uid;
+  copy.name = `${ex.name} Copy`;
+  return copy;
+}
+
 // ---------- Scripts ----------
 
 export function getScript(target, listen) {

@@ -44,6 +44,7 @@ const P = {
   plus: 'M12 5v14M5 12h14',
   more: 'M5 12h.01M12 12h.01M19 12h.01',
   search: 'M11 18a7 7 0 100-14 7 7 0 000 14zM21 21l-5-5',
+  filter: 'M4 5h16l-6 7.5V19l-4 1v-7.5z',
   sync: 'M20 11a8 8 0 00-14.9-3M4 5v4h4M4 13a8 8 0 0014.9 3M20 19v-4h-4',
   gear: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z',
   x: 'M6 6l12 12M18 6L6 18',
@@ -70,6 +71,7 @@ const P = {
   key: 'M15 7a4 4 0 11-3.9 4.9L4 19v2h3v-2h2v-2h2l1.1-1.1A4 4 0 0115 7zM16 9.5h.01',
   wrap: 'M4 6h16M4 12h13a3 3 0 010 6h-4M15 16l-2 2 2 2M4 18h5',
   terminal: 'M5 7l5 5-5 5M12 19h7',
+  code: 'M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 5l-3 14',
   link: 'M10 14a5 5 0 007.1 0l3-3a5 5 0 00-7.1-7.1l-1 1M14 10a5 5 0 00-7.1 0l-3 3a5 5 0 007.1 7.1l1-1',
   logout: 'M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 17l5-5-5-5M15 12H3',
 };
@@ -116,6 +118,70 @@ export function showMenu(anchorOrEvent, items, owner) {
   owner?.classList.add('menu-open');
   openMenu = menu;
 }
+/**
+ * A menu with a search box: type to filter, ↑/↓ to move, Enter to pick.
+ * items: [{ id, label, hint }]
+ */
+export function pickerMenu(anchor, { items, current, onPick, placeholder = 'Search' }) {
+  closeMenu();
+  const input = h('input', { class: 'input', placeholder, spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off' });
+  const list = h('div', { class: 'picker-list', role: 'listbox' });
+  const menu = h('div', { class: 'menu picker', role: 'menu' }, input, list);
+  let shown = [];
+  let active = Math.max(0, items.findIndex((it) => it.id === current));
+  const pick = (it) => { closeMenu(); if (it.id !== current) onPick(it); };
+  const highlight = () => {
+    [...list.children].forEach((el, i) => el.classList.toggle('on', i === active));
+    list.children[active]?.scrollIntoView({ block: 'nearest' });
+  };
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    shown = items.filter((it) => !q || it.label.toLowerCase().includes(q) || it.hint?.toLowerCase().includes(q));
+    active = Math.min(active, Math.max(0, shown.length - 1));
+    list.replaceChildren(...(shown.length ? shown.map((it, i) => h('button', {
+      role: 'option',
+      onmousemove: () => { if (active !== i) { active = i; highlight(); } },
+      onclick: (e) => { e.stopPropagation(); pick(it); },
+    }, it.id === current ? icon('check') : h('span', { class: 'picker-gap' }), h('span', { class: 'ellipsis' }, it.label), it.hint ? h('span', { class: 'k' }, it.hint) : null))
+      : [h('div', { class: 'picker-empty' }, 'No matches')]));
+    highlight();
+  };
+  input.addEventListener('input', () => { active = 0; render(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (shown.length) { active = (active + (e.key === 'ArrowDown' ? 1 : shown.length - 1)) % shown.length; highlight(); }
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (shown[active]) pick(shown[active]);
+    }
+  });
+  render();
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.min(r.left, innerWidth - menu.offsetWidth - 8)}px`;
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.width = `${Math.max(r.width, 260)}px`;
+  anchor.classList.add('menu-open');
+  openMenu = menu;
+  input.focus();
+}
+
+/** Free-form content in a menu-style popover below `anchor` (closes like a menu). */
+export function popover(anchor, content, { width } = {}) {
+  closeMenu();
+  const menu = h('div', { class: 'menu popover', role: 'dialog' }, content);
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  if (width) menu.style.width = `${width}px`;
+  const left = Math.max(8, Math.min(r.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8));
+  const top = r.bottom + 6 + menu.offsetHeight > innerHeight - 8 ? Math.max(8, r.top - menu.offsetHeight - 6) : r.bottom + 6;
+  Object.assign(menu.style, { left: `${left}px`, top: `${top}px` });
+  anchor.classList.add('menu-open');
+  openMenu = menu;
+  return menu;
+}
+
 document.addEventListener('mousedown', (e) => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
 

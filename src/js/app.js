@@ -1,8 +1,16 @@
 import { h, icon, $, dragResize, methodClass, methodLabel, toast, errText, closeMenu, showMenu } from './ui/dom.js';
 import { renderSidebar } from './ui/sidebar.js';
-import { renderRequestEditor, renderResponse } from './ui/request.js';
+import { renderRequestEditor, renderResponse, codeDialog } from './ui/request.js';
 import { renderContainer, renderEnvTab, renderWelcome, renderEmpty, openSettings, applyTheme, envQuickLook } from './ui/panels.js';
 import { renderRunner } from './ui/runner.js';
+import { renderExampleEditor, renderExampleResponse } from './ui/example.js';
+import { openPalette } from './ui/palette.js';
+import { renderVaultTab } from './ui/vaultview.js';
+import { renderMockTab } from './ui/mockview.js';
+import { renderChainTab } from './ui/chainview.js';
+import { renderLoadTab } from './ui/loadview.js';
+import { renderGrpcTab } from './ui/grpcview.js';
+import { checkFolders } from './folderlink.js';
 import { scheduleUpdateCheck } from './updater.js';
 import * as S from './store.js';
 import { state, on } from './store.js';
@@ -27,11 +35,11 @@ function renderTabs() {
       oncontextmenu: (e) => { e.preventDefault(); showMenu(e, [
         { label: 'Close', key: '⌘W', onClick: () => C.closeTab(t.id) },
         { label: 'Close other tabs', onClick: async () => { for (const x of C.wsTabs()) if (x.id !== t.id) await C.closeTab(x.id); } },
-        { label: 'Duplicate tab', onClick: () => C.openDraft(S.clone({ ...t.draft, id: crypto.randomUUID(), name: `${t.draft.name} Copy` })) },
-      ]); },
+        t.kind === 'request' ? { label: 'Duplicate tab', onClick: () => C.openDraft(S.clone({ ...t.draft, id: crypto.randomUUID(), name: `${t.draft.name} Copy` })) } : null,
+      ].filter(Boolean)); },
     },
       t.kind === 'request' ? h('span', { class: ['method', methodClass(m)] }, methodLabel(m))
-      : icon(t.kind === 'runner' ? 'play' : t.kind === 'container' ? (t.ref.item ? 'folder' : 'box') : 'globe', 'ico'),
+      : icon(t.kind === 'runner' ? 'play' : t.kind === 'vault' ? 'key' : t.kind === 'mock' ? 'layers' : t.kind === 'chain' ? 'link' : t.kind === 'load' ? 'play' : t.kind === 'grpc' ? 'layers' : t.kind === 'example' ? 'file' : t.kind === 'container' ? (t.ref.item ? 'folder' : 'box') : 'globe', 'ico'),
       h('span', { class: 'title' }, C.tabTitle(t)),
       h('button', { class: 'close', title: 'Close', onclick: (e) => { e.stopPropagation(); C.closeTab(t.id); } }, icon('x')));
     return el;
@@ -47,6 +55,7 @@ function renderTopRight() {
     h('option', { value: '' }, 'No environment'),
     envs.map((e) => h('option', { value: e.uid, selected: e === active }, e.name)));
   topRight.replaceChildren(
+    h('button', { class: 'icon-btn', title: 'Search everything (⌘K)', onclick: () => openPalette() }, icon('search')),
     sel,
     h('button', { class: 'icon-btn', title: 'Quick look at variables', onclick: (e) => envQuickLook(e) }, icon('eye')));
 }
@@ -62,7 +71,7 @@ function renderMain() {
   workspaceEl.classList.remove('side');
   if (!state.settings.onboarded) return renderWelcome(workspaceEl);
   if (!t) return renderEmpty(workspaceEl);
-  if (t.kind === 'request') {
+  if (t.kind === 'request' || t.kind === 'example') {
     editorEl = h('section', { id: 'editor' });
     responseEl = h('section', { id: 'response' });
     const side = state.settings.layout === 'side';
@@ -77,8 +86,13 @@ function renderMain() {
       editorEl.style.flex = `0 0 ${size}px`;
     }, () => { S.saveSettings(); renderMainSizes(); });
     workspaceEl.replaceChildren(editorEl, handle, responseEl);
-    renderRequestEditor(editorEl, t);
-    renderResponse(responseEl, t);
+    if (t.kind === 'example') {
+      renderExampleEditor(editorEl, t);
+      renderExampleResponse(responseEl, t);
+    } else {
+      renderRequestEditor(editorEl, t);
+      renderResponse(responseEl, t);
+    }
   } else if (t.kind === 'container') {
     const el = h('section', { id: 'editor', style: { flex: '1' } });
     workspaceEl.replaceChildren(el);
@@ -87,6 +101,25 @@ function renderMain() {
     const el = h('section', { id: 'editor', style: { flex: '1' } });
     workspaceEl.replaceChildren(el);
     renderEnvTab(el, t);
+  } else if (t.kind === 'grpc') {
+    workspaceEl.replaceChildren();
+    renderGrpcTab(workspaceEl, t);
+  } else if (t.kind === 'load') {
+    const el = h('section', { id: 'editor', style: { flex: '1' } });
+    workspaceEl.replaceChildren(el);
+    renderLoadTab(el, t);
+  } else if (t.kind === 'chain') {
+    const el = h('section', { id: 'editor', style: { flex: '1' } });
+    workspaceEl.replaceChildren(el);
+    renderChainTab(el, t);
+  } else if (t.kind === 'mock') {
+    const el = h('section', { id: 'editor', style: { flex: '1' } });
+    workspaceEl.replaceChildren(el);
+    renderMockTab(el, t);
+  } else if (t.kind === 'vault') {
+    const el = h('section', { id: 'editor', style: { flex: '1' } });
+    workspaceEl.replaceChildren(el);
+    renderVaultTab(el, t);
   } else if (t.kind === 'runner') {
     const el = h('section', { id: 'editor', style: { flex: '1' } });
     workspaceEl.replaceChildren(el);
@@ -126,6 +159,7 @@ on('workspace', () => { sidebarRefresh(); renderTabs(); renderTopRight(); render
 on('tabs', () => { renderTabs(); sidebarRefresh(); });
 on('main', renderMain);
 on('response', updateRunState);
+on('mock', () => { sidebarRefresh(); if (C.activeTab()?.kind === 'mock' && !workspaceEl.contains(document.activeElement)) renderMain(); });
 on('env', () => { renderTopRight(); sidebarRefresh(); repaintVars(); const t = C.activeTab(); if (t && (t.kind === 'env' || t.kind === 'globals') && !t.dirty) renderMain(); });
 on('env-values', () => { repaintVars(); const t = C.activeTab(); if (t && (t.kind === 'env' || t.kind === 'globals' || (t.kind === 'container' && t.sub === 'variables')) && !workspaceEl.contains(document.activeElement)) renderMain(); });
 on('tabs-refresh', () => {
@@ -153,10 +187,20 @@ document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'enter' && t?.kind === 'request') { e.preventDefault(); C.run(t); }
   else if (k === 's') { e.preventDefault(); if (t) C.saveTab(t); }
+  else if (k === 'k' || (k === 'p' && !e.shiftKey)) { e.preventDefault(); openPalette(); }
   else if (k === 't' || (k === 'n' && !e.shiftKey)) { e.preventDefault(); C.openDraft(); }
   else if (k === 'w') { e.preventDefault(); if (t) C.closeTab(t.id); }
   else if (k === ',') { e.preventDefault(); openSettings(); }
   else if (k === 'l' && t?.kind === 'request') { e.preventDefault(); editorEl?.focusUrl?.(); }
+  else if (e.code === 'KeyC' && e.altKey && t?.kind === 'request') { e.preventDefault(); codeDialog(t); }
+  else if (k === 'f' && !e.shiftKey && t?.kind === 'request' && t.response?.response && !t.response.response.bodyBase64) {
+    // Find in the response body (the request editor's own fields keep native find).
+    e.preventDefault();
+    t.find = { ...(t.find || { q: '' }), open: true };
+    t.respTab = 'body';
+    if (t.bodyView === 'preview') t.bodyView = 'pretty';
+    updateRunState();
+  }
   else if (e.code === 'KeyV' && e.altKey) { e.preventDefault(); S.toggleLayout(); }
   else if ((e.key === ']' || e.key === '}') && e.shiftKey || (e.key === 'Tab' && e.ctrlKey && !e.shiftKey)) { e.preventDefault(); cycleTab(1); }
   else if ((e.key === '[' || e.key === '{') && e.shiftKey || (e.key === 'Tab' && e.ctrlKey && e.shiftKey)) { e.preventDefault(); cycleTab(-1); }
@@ -171,7 +215,10 @@ function cycleTab(dir) {
 
 // Re-sync when the window comes back into focus (at most every 2 minutes).
 let lastFocusSync = Date.now();
+let lastFolderCheck = 0;
 window.addEventListener('focus', () => {
+  // Collections linked to a folder pick up git pulls and outside edits.
+  if (Date.now() - lastFolderCheck > 1500) { lastFolderCheck = Date.now(); checkFolders().catch(() => {}); }
   if (state.hasKey && S.isCloud() && Date.now() - lastFocusSync > 120000) {
     lastFocusSync = Date.now();
     S.refreshWorkspace().catch(() => {});
@@ -185,4 +232,4 @@ S.init().catch((e) => {
   console.error(e);
   toast(`Dispatch couldn't load its data: ${errText(e)}`, { error: true, timeout: 15000 });
   renderAll();
-}).finally(() => scheduleUpdateCheck());
+}).finally(() => { scheduleUpdateCheck(); checkFolders().catch(() => {}); });

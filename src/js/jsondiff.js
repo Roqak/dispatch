@@ -60,7 +60,7 @@ const pretty = (text) => {
 /**
  * Compare two response body texts as JSON values when both parse.
  * opts: { ignoreWhitespace = false, ignoreArrayOrder = false }
- * Returns { mode: 'json' | 'lines', rows, stats: { added, removed, same } }.
+ * Returns { mode: 'json' | 'lines', rows, stats: { added, removed, changed, same } }.
  */
 export function diffResponses(aText, bText, opts = {}) {
   const ignoreWhitespace = opts.ignoreWhitespace !== false; // default on
@@ -77,9 +77,9 @@ export function diffResponses(aText, bText, opts = {}) {
     const raw = lineDiff(A, B);
     rows = collapse(raw, aText, bText, ignoreWhitespace);
   }
-  let added = 0, removed = 0;
-  for (const r of rows) { if (r.type === 'add') added++; else if (r.type === 'del') removed++; }
-  return { mode, rows, stats: { added, removed, same: aText === bText ? 'identical' : 'different' } };
+  let added = 0, removed = 0, changed = 0;
+  for (const r of rows) { if (r.type === 'add') added++; else if (r.type === 'del') removed++; else if (r.type === 'change') changed++; }
+  return { mode, rows, stats: { added, removed, changed, same: aText === bText ? 'identical' : 'different' } };
 }
 
 function safeParse(text) {

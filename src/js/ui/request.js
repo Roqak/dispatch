@@ -1,15 +1,24 @@
-import { h, icon, showMenu, toast, errText, fmtBytes, fmtMs, methodClass } from './dom.js';
+import { h, icon, showMenu, toast, errText, fmtBytes, fmtMs, methodClass, modal, popover, closeMenu } from './dom.js';
+import { LANGUAGES, generate } from '../codegen.js';
+import { docsEditor, descriptionText } from './docs.js';
+import { openCookieManager } from './cookies.js';
+import { writeTests, explainResponse } from './assistview.js';
+import { loadVendor } from '../vendor.js';
 import { varInput, kvSection, codeArea, highlightJson, subtabs } from './components.js';
-import { diffResponses } from '../jsondiff.js';
+import { diffTable, openCompare } from './compare.js';
 import * as WS from '../ws.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
 import { state } from '../store.js';
 import { bridge } from '../bridge.js';
-import { METHODS, urlObject, setRawUrl, rawWithQuery, getScript, setScript, AUTH_TYPES, authParam, setAuthParam, effectiveAuth, parseUrl, clone } from '../model.js';
+import { METHODS, urlObject, setRawUrl, rawWithQuery, getScript, setScript, AUTH_TYPES, authParam, setAuthParam, effectiveAuth, parseUrl, clone, exampleFromResponse } from '../model.js';
 import { fetchOAuthToken } from '../send.js';
 import { parseCurl } from '../curl.js';
 import { formatJsonc, jsonProblem } from '../jsonc.js';
+import { jsonPath } from '../jsonpath.js';
+import { parseSse, parseNdjson, isEventStream, isLineStream } from '../sse.js';
+import { graphqlEditor } from './gqleditor.js';
+import { INTROSPECTION_QUERY, buildSchema } from '../graphql.js';
 
 // ---------- request editor ----------
 
@@ -29,9 +38,13 @@ export function renderRequestEditor(root, t) {
     nameInput,
     h('span', { class: 'grow' }),
     h('button', { class: 'icon-btn', title: state.settings.layout === 'side' ? 'Show the response below (⌥⌘V)' : 'Show the response beside the request (⌥⌘V)', onclick: () => S.toggleLayout() }, icon(state.settings.layout === 'side' ? 'rows' : 'columns')),
+    h('button', { class: 'icon-btn', title: 'Code snippet (⌥⌘C)', onclick: () => codeDialog(t) }, icon('code')),
     h('button', { class: 'btn sm', title: 'Save (⌘S)', onclick: () => C.saveTab(t) }, icon('check'), t.ref?.col ? 'Save' : 'Save to collection'),
     h('button', { class: 'icon-btn', title: 'More', onclick: (e) => showMenu(e, [
       { label: 'Copy as cURL', icon: 'terminal', onClick: async () => { await navigator.clipboard.writeText(C.curlFor(t)); toast('Copied cURL command'); } },
+      { label: 'Generate code…', icon: 'code', key: '⌥⌘C', onClick: () => codeDialog(t) },
+      { label: 'Compare across environments…', icon: 'columns', onClick: () => openCompare(t) },
+      { label: 'Load test…', icon: 'play', onClick: () => C.openLoadTest(t) },
       { label: 'Save as new request…', icon: 'copy', onClick: async () => { const { saveAsDialog } = await import('./panels.js'); const r = await saveAsDialog(`${t.draft.name} Copy`); if (r) { const nt = C.openDraft(clone(t.draft)); await C.saveRequestInto(nt, r.entry, r.folderId, r.name); } } },
       t.ref?.col && t.dirty ? { label: 'Discard changes', icon: 'sync', onClick: () => { const f = C.contextFor(t).item; if (f) { t.draft = clone(f); t.dirty = false; C.emitAll(); } } } : null,
     ].filter(Boolean)) }, icon('more')));
@@ -70,19 +83,22 @@ export function renderRequestEditor(root, t) {
 
   // sub tabs
   const enabledCount = (a) => (a || []).filter((x) => !x.disabled && x.key).length;
-  const hasScripts = !!(getScript(t.draft, 'prerequest') || getScript(t.draft, 'test'));
-  const authType = req.auth?.type || 'inherit';
-  const tabsDef = [
-    { id: 'params', label: 'Params', count: enabledCount(req.url.query) || '' },
-    { id: 'auth', label: 'Authorization', dot: authType !== 'inherit' && authType !== 'noauth' },
-    { id: 'headers', label: 'Headers', count: enabledCount(req.header) || '' },
-    { id: 'body', label: 'Body', dot: !!req.body?.mode && req.body.mode !== 'none' && !isEmptyBody(req.body) },
-    { id: 'scripts', label: 'Scripts', dot: hasScripts },
-    { id: 'settings', label: 'Settings' },
-  ];
+  // Rebuilt on every renderTabs so counts and dots follow edits.
+  const tabsDef = () => {
+    const authType = req.auth?.type || 'inherit';
+    return [
+      { id: 'params', label: 'Params', count: enabledCount(req.url.query) || '' },
+      { id: 'auth', label: 'Authorization', dot: authType !== 'inherit' && authType !== 'noauth' },
+      { id: 'headers', label: 'Headers', count: enabledCount(req.header) || '' },
+      { id: 'body', label: 'Body', dot: !!req.body?.mode && req.body.mode !== 'none' && !isEmptyBody(req.body) },
+      { id: 'scripts', label: 'Scripts', dot: !!(getScript(t.draft, 'prerequest') || getScript(t.draft, 'test')) },
+      { id: 'settings', label: 'Settings' },
+      { id: 'docs', label: 'Docs', dot: !!descriptionText(req.description).trim() },
+    ];
+  };
   const tabsHolder = h('div');
   const pane = h('div', { class: 'pane' });
-  const renderTabs = () => tabsHolder.replaceChildren(subtabs(tabsDef, t.sub, (id) => { t.sub = id; renderTabs(); renderPane(); C.saveTabsLater(); }));
+  const renderTabs = () => tabsHolder.replaceChildren(subtabs(tabsDef(), t.sub, (id) => { t.sub = id; renderTabs(); renderPane(); C.saveTabsLater(); }));
 
   function renderPane() {
     pane.replaceChildren();
@@ -104,11 +120,25 @@ export function renderRequestEditor(root, t) {
       const { auth, source } = effectiveAuth(req, parents, collection);
       pane.append(h('p', { class: 'hint' }, 'Dispatch adds ', h('span', { class: 'mono' }, 'Accept: */*'), ' and a Content-Type matching the body when you haven\'t set them.', auth ? ` Auth headers come from ${source === 'request' ? 'the Authorization tab' : `the ${source === 'collection' ? 'collection' : `"${source}" folder`}`}.` : ''));
     } else if (sub === 'body') {
-      pane.append(bodyEditor(req, resolver, dirty, () => { renderTabs(); }));
+      pane.append(bodyEditor(req, resolver, dirty, () => { renderTabs(); }, { graphql: {
+        schemaKey: () => { try { return C.outgoingFor(t).url; } catch { return ''; } },
+        loadSchema: async () => {
+          // Introspect the same endpoint, with the request's own headers and auth.
+          const o = C.outgoingFor(t);
+          const headers = o.headers.filter((x) => x.key.toLowerCase() !== 'content-type').concat({ key: 'Content-Type', value: 'application/json' });
+          const res = await bridge.send({ ...o, method: 'POST', headers, body: { mode: 'raw', content: JSON.stringify({ query: INTROSPECTION_QUERY, operationName: 'IntrospectionQuery' }) } });
+          let json;
+          try { json = JSON.parse(res.bodyText || ''); } catch { throw new Error(`The server answered ${res.status} without JSON. Check the URL and auth.`); }
+          return buildSchema(json);
+        },
+      } }));
     } else if (sub === 'scripts') {
       pane.append(scriptsEditor(t.draft, t, dirty, () => renderTabs()));
     } else if (sub === 'settings') {
       pane.append(requestSettings(t.draft, dirty));
+    } else if (sub === 'docs') {
+      // Postman keeps a request's documentation on request.description.
+      pane.append(docsEditor({ get: () => descriptionText(req.description), set: (v) => { if (v) req.description = v; else delete req.description; }, onChange: () => { dirty(); renderTabs(); }, state: t }));
     }
   }
   renderTabs();
@@ -261,9 +291,32 @@ export function authEditor({ target, kind, parents = [], collection, resolver, o
   return box;
 }
 
+// ---------- code snippets ----------
+
+/** Postman's "Code" panel: the request as it would go out, in another language. */
+export function codeDialog(t) {
+  let lang = LANGUAGES.some(([id]) => id === state.settings.codegenLang) ? state.settings.codegenLang : 'curl';
+  let outgoing;
+  try { outgoing = C.outgoingFor(t); } catch (e) { toast(errText(e), { error: true }); return; }
+  const pre = h('pre', { class: 'body code-snippet' });
+  const render = () => { try { pre.textContent = generate(lang, outgoing); } catch (e) { pre.textContent = errText(e); } };
+  const sel = h('select', { class: 'select', onchange: (e) => { lang = e.target.value; state.settings.codegenLang = lang; S.saveSettings(); render(); } },
+    LANGUAGES.map(([id, label]) => h('option', { value: id, selected: id === lang }, label)));
+  render();
+  modal({
+    title: 'Code snippet',
+    wide: true,
+    body: h('div', null,
+      h('div', { class: 'row', style: { marginBottom: '10px' } }, sel, h('span', { class: 'grow' }),
+        h('button', { class: 'btn sm', onclick: async () => { await navigator.clipboard.writeText(pre.textContent); toast('Copied'); } }, icon('copy'), 'Copy')),
+      pre,
+      h('p', { class: 'hint', style: { marginBottom: 0 } }, 'Variables are filled in with their current values and auth is applied; {{vault:…}} secrets stay as placeholders. Check for other secrets before sharing.')),
+  });
+}
+
 // ---------- body ----------
 
-function bodyEditor(req, resolver, dirty, onModeChange) {
+export function bodyEditor(req, resolver, dirty, onModeChange, opts = {}) {
   const wrap = h('div', { class: 'split-pane' });
   const body = (req.body = req.body || { mode: 'none' });
   const modes = [['none', 'none'], ['formdata', 'form-data'], ['urlencoded', 'x-www-form-urlencoded'], ['raw', 'raw'], ['file', 'binary'], ['graphql', 'GraphQL']];
@@ -298,9 +351,7 @@ function bodyEditor(req, resolver, dirty, onModeChange) {
       const src = body.file?.src;
       parts.push(h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { const p = await bridge.pickFilePath(); if (p) { body.file = { src: p }; dirty(); render(); } } }, icon('file'), src ? 'Change file' : 'Choose file'), h('span', { class: 'mono muted ellipsis' }, src || 'No file chosen')));
     } else if (mode === 'graphql') {
-      body.graphql = body.graphql || { query: '', variables: '' };
-      parts.push(h('div', { class: 'pane-title' }, 'Query'), codeArea({ value: body.graphql.query || '', minHeight: 140, placeholder: 'query {\n  viewer { id }\n}', oninput: (v) => { body.graphql.query = v; dirty(); } }),
-        h('div', { class: 'pane-title', style: { marginTop: '12px' } }, 'Variables (JSON)'), codeArea({ value: body.graphql.variables || '', minHeight: 80, oninput: (v) => { body.graphql.variables = v; dirty(); } }));
+      parts.push(graphqlEditor({ body, dirty, ...(opts.graphql || { schemaKey: () => '', loadSchema: async () => { throw new Error('Open this request in its own tab to load the schema.'); } }) }));
     } else {
       parts.push(h('p', { class: 'hint' }, 'This request has no body.'));
     }
@@ -386,6 +437,7 @@ function requestSettings(item, dirty) {
 export function renderResponse(root, t) {
   if (WS.isWs(t.draft?.request?.url?.raw || '') || t.wsConn) return renderWsResponse(root, t);
   const r = t.response;
+  if (t.running && t.stream?.head) return renderLiveStream(root, t);
   if (t.running) {
     root.replaceChildren(h('div', { class: 'loading-bar' }), h('div', { class: 'resp-empty' }, h('div', null, 'Sending request…')));
     return;
@@ -404,12 +456,15 @@ export function renderResponse(root, t) {
     { id: 'headers', label: 'Headers', count: res?.headers?.length || '' },
     { id: 'tests', label: tests.length ? `Tests ${passed}/${tests.length}` : 'Tests' },
     { id: 'console', label: 'Console', count: r.logs?.length || '' },
+    ...(res && (res.streamed || isEventStream(res.contentType) || isLineStream(res.contentType)) ? [{ id: 'events', label: 'Events', count: streamEvents(t, res).length || '' }] : []),
+    ...(r.visualizer ? [{ id: 'visualize', label: 'Visualize' }] : []),
     ...(res ? [{ id: 'diff', label: 'Diff' }] : []),
   ];
+  if (t.respTab === 'visualize' && !r.visualizer) t.respTab = 'body';
   const statusCls = res ? `s${String(res.status)[0]}` : '';
   const meta = res ? h('div', { class: 'resp-meta' },
     h('span', { class: ['status-pill', statusCls] }, `${res.status} ${res.statusText || ''}`.trim()),
-    h('span', null, h('b', null, fmtMs(res.timeMs))),
+    res.timings ? timingButton(res) : h('span', null, h('b', null, fmtMs(res.timeMs))),
     h('span', null, h('b', null, fmtBytes(res.size))),
     failedTests ? h('span', { style: { color: 'var(--err)' } }, `${failedTests} failed`) : null,
     h('button', { class: 'icon-btn', title: 'More', onclick: (e) => showMenu(e, [
@@ -420,6 +475,9 @@ export function renderResponse(root, t) {
         if (p) toast(`Saved to ${p}`);
       } },
       t.ref?.col ? { label: 'Save as example', icon: 'check', onClick: () => saveExample(t) } : null,
+      { label: 'Write tests with AI…', icon: 'check', onClick: () => writeTests(t) },
+      { label: 'Explain this response', icon: 'info', onClick: () => explainResponse(t) },
+      { label: 'Cookies for this site…', icon: 'globe', onClick: () => { let host = ''; try { host = new URL(res.url).hostname; } catch { /* keep empty */ } openCookieManager({ domain: host }); } },
     ].filter(Boolean)) }, icon('more'))) : null;
 
   const head = h('div', { class: 'resp-head' }, subtabs(tabsDef, t.respTab, (id) => { t.respTab = id; renderResponse(root, t); }), meta);
@@ -434,6 +492,7 @@ export function renderResponse(root, t) {
     body.append(...notes, h('div', { class: 'resp-error' },
       h('h3', null, r.error ? 'Could not send request' : 'Nothing was sent'),
       h('p', null, r.error || (r.notes || []).join(' ')),
+      r.error ? h('button', { class: 'btn sm', onclick: () => explainResponse(t) }, icon('info'), 'Explain with AI') : null,
       r.outgoing ? h('p', { class: 'mono' }, `${r.outgoing.method} ${r.outgoing.url}`) : null));
     if (t.respTab === 'console') body.replaceChildren(consoleView(r));
   } else if (t.respTab === 'body') {
@@ -441,7 +500,7 @@ export function renderResponse(root, t) {
   } else if (t.respTab === 'headers') {
     body.append(h('table', { class: 'hdr-table' }, res.headers.map((x) => h('tr', null, h('td', null, x.key), h('td', null, x.value)))));
   } else if (t.respTab === 'tests') {
-    if (!tests.length) body.append(h('div', { class: 'resp-empty' }, h('div', null, 'No tests ran. Add some in the Scripts tab → Post-response.')));
+    if (!tests.length) body.append(h('div', { class: 'resp-empty' }, h('div', null, 'No tests ran. Add some in the Scripts tab → Post-response, or ', h('a', { style: { color: 'var(--accent)', cursor: 'pointer' }, onclick: () => writeTests(t) }, 'write them with AI'), '.')));
     else body.append(...tests.map((x) => h('div', { class: 'test-row' },
       h('span', { class: ['tag', x.skipped ? 'skip' : x.passed ? 'pass' : 'fail'] }, x.skipped ? 'SKIP' : x.passed ? 'PASS' : 'FAIL'),
       h('div', null, h('div', null, x.name), x.error ? h('div', { class: 'err' }, x.error) : null))));
@@ -449,8 +508,86 @@ export function renderResponse(root, t) {
     body.append(consoleView(r));
   } else if (t.respTab === 'diff' && res) {
     body.append(diffView(root, t, res));
+  } else if (t.respTab === 'events' && res) {
+    body.append(eventsView(streamEvents(t, res), { live: false }));
+  } else if (t.respTab === 'visualize' && r.visualizer) {
+    body.append(visualizerView(r.visualizer));
   }
   root.replaceChildren(head, body);
+}
+
+/** The response time, with a hover/click breakdown of where it went. */
+function timingButton(res) {
+  const tm = res.timings;
+  const btn = h('button', { class: 'meta-btn', title: 'Where the time went',
+    onmousedown: (e) => e.stopPropagation(),
+    onclick: () => (btn.classList.contains('menu-open') ? closeMenu() : popover(btn, timingView(tm, res), { width: 340 })) },
+  h('b', null, fmtMs(res.timeMs)));
+  return btn;
+}
+
+function timingView(tm, res) {
+  const phases = [
+    ['DNS lookup', tm.dnsMs, 'dns'],
+    [/^https:/i.test(res.url || '') ? 'TCP + TLS handshake' : 'TCP connect', tm.connectMs, 'connect'],
+    ['Waiting (time to first byte)', tm.waitingMs, 'wait'],
+    ['Download', tm.downloadMs, 'download'],
+  ];
+  const total = Math.max(tm.totalMs, 0.001);
+  const fmt = (v) => (v < 1 ? `${v.toFixed(2)} ms` : v < 1000 ? `${v.toFixed(v < 10 ? 1 : 0)} ms` : `${(v / 1000).toFixed(2)} s`);
+  let at = 0;
+  const rows = phases.map(([label, v, cls]) => {
+    const left = (at / total) * 100;
+    at += v;
+    return h('div', { class: 'timing-row' },
+      h('span', { class: 'timing-label' }, label),
+      h('span', { class: 'timing-track' }, h('span', { class: ['timing-bar', cls], style: { left: `${left}%`, width: `${Math.max(0.6, (v / total) * 100)}%` } })),
+      h('span', { class: 'timing-val mono' }, fmt(v)));
+  });
+  return h('div', { class: 'timing' },
+    h('div', { class: 'timing-head' }, h('span', null, 'Response time'), h('b', { class: 'mono' }, fmt(tm.totalMs))),
+    ...rows,
+    tm.connections > 1 ? h('p', { class: 'hint', style: { margin: '8px 0 0' } }, `${tm.connections} connections opened (redirects); phases are summed across them.`) : null,
+    h('p', { class: 'hint', style: { margin: '8px 0 0' } }, `${fmtBytes(res.size)} received. Each send opens a fresh connection, so DNS and the handshake are always included.`));
+}
+
+/** Events of a finished stream: the live capture (with arrival times) or parsed from the body. */
+function streamEvents(t, res) {
+  if (t.stream?.events?.length) return t.stream.events;
+  return isEventStream(res.contentType) ? parseSse(res.bodyText || '') : parseNdjson(res.bodyText || '');
+}
+
+function eventsView(events, { live }) {
+  if (!events.length) return h('div', { class: 'resp-empty' }, h('div', null, live ? 'Connected. Waiting for the first event…' : 'No events in this response.'));
+  const list = h('div', { class: 'sse-list' }, events.map((e, i) => {
+    let pretty = null;
+    if (/^\s*[{[]/.test(e.data)) { const p = safeParse(e.data); if (p !== undefined) pretty = JSON.stringify(p); }
+    return h('div', { class: 'sse-row' },
+      h('span', { class: 'faint mono sse-n' }, i + 1),
+      h('span', { class: ['sse-type', e.event !== 'message' && e.event !== 'line' && 'named'] }, e.event),
+      h('span', { class: 'mono sse-data', title: e.data }, pretty ?? e.data),
+      h('span', { class: 'faint mono sse-at' }, e.at != null ? fmtMs(e.at) : e.id ? `id ${e.id}` : ''));
+  }));
+  if (live) queueMicrotask(() => { const sc = list.closest('.resp-body'); if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 120) sc.scrollTop = sc.scrollHeight; });
+  return list;
+}
+
+/** While a stream is open: status, event count, live events, and Stop. */
+function renderLiveStream(root, t) {
+  const s = t.stream;
+  const statusCls = `s${String(s.head.status)[0]}`;
+  const head = h('div', { class: 'resp-head' },
+    h('div', { class: 'subtabs' }, h('button', { class: 'subtab active' }, 'Events', h('span', { class: 'count' }, ` ${s.events.length}`))),
+    h('div', { class: 'resp-meta' },
+      h('span', { class: ['status-pill', statusCls] }, `${s.head.status} ${s.head.statusText || ''}`.trim()),
+      h('span', { class: 'chip ok live-chip' }, 'streaming'),
+      h('span', null, h('b', null, fmtBytes(new TextEncoder().encode(s.text).length))),
+      h('button', { class: 'btn sm', onclick: () => C.stopStream(t) }, icon('stop'), 'Stop')));
+  const body = h('div', { class: 'resp-body' }, eventsView(s.events, { live: true }));
+  const prev = root.querySelector('.resp-body');
+  const keep = prev ? prev.scrollTop : null;
+  root.replaceChildren(h('div', { class: 'loading-bar' }), head, body);
+  if (keep != null) body.scrollTop = keep;
 }
 
 function renderWsResponse(root, t) {
@@ -494,7 +631,7 @@ function diffView(root, t, res) {
   const state = (t.diffState = t.diffState || { sourceId: null, ignoreArrayOrder: false });
 
   const sources = [];
-  for (const ex of t.draft?.response || []) {
+  for (const ex of C.contextFor(t).item?.response || t.draft?.response || []) {
     const text = typeof ex.body === 'string' ? ex.body : ex.body?.raw ?? '';
     sources.push({ id: `ex:${ex.id || ex.name}`, label: `Example: ${ex.name}`, text });
   }
@@ -539,32 +676,7 @@ function diffView(root, t, res) {
 
 /** Renders the actual diff rows (current on the left, `against` on the right). */
 function diffRows(t, content, side, againstText, ignoreArrayOrder) {
-  const currentText = t.response?.response?.bodyText ?? '';
-  const { mode, rows, stats } = diffResponses(currentText, againstText, { ignoreArrayOrder });
-  const head = h('div', { class: 'diff-summary' },
-    h('span', { class: ['chip', stats.added + stats.removed ? 'bad' : 'ok'] }, mode === 'json' ? `${stats.added} added · ${stats.removed} removed` : `${stats.added} newer · ${stats.removed} older lines`),
-    h('span', { class: 'muted', style: { fontSize: '12px' } }, stats.same));
-  const table = h('table', { class: 'diff-table' });
-  if (mode === 'json') {
-    for (const row of rows) {
-      table.append(h('tr', { class: `diff-${row.type}` },
-        h('td', null, row.path || '(root)'),
-        h('td', null, fmtValue(row.a)),
-        h('td', null, fmtValue(row.b))));
-    }
-  } else {
-    for (const row of rows) {
-      table.append(h('tr', { class: `diff-${row.type}` },
-        h('td', null, `${row.line}`),
-        h('td', { class: 'mono' }, row.text)));
-    }
-  }
-  content.append(head, h('div', { class: 'diff-scroll' }, table));
-}
-
-function fmtValue(v) {
-  if (v === undefined) return '';
-  return JSON.stringify(v)?.slice(0, 160) ?? String(v);
+  content.append(...diffTable(t.response?.response?.bodyText ?? '', againstText, { ignoreArrayOrder }));
 }
 
 function consoleView(r) {
@@ -587,15 +699,21 @@ function bodyView(res, t) {
   t.bodyView = t.bodyView || 'pretty';
   const view = t.bodyView;
   const wrapOn = !!t.wrap;
+  const textual = !res.bodyBase64 && view !== 'preview';
+  const rerender = () => container.replaceWith(bodyView(res, t));
   const container = h('div');
   const tools = h('div', { class: 'resp-tools' },
     h('div', { class: 'seg' },
-      ['pretty', 'raw', ...(isHtml || isImage ? ['preview'] : [])].map((v) => h('button', { class: view === v ? 'on' : '', onclick: () => { t.bodyView = v; container.replaceWith(bodyView(res, t)); } }, v[0].toUpperCase() + v.slice(1)))),
+      ['pretty', 'raw', ...(isHtml || isImage ? ['preview'] : [])].map((v) => h('button', { class: view === v ? 'on' : '', onclick: () => { t.bodyView = v; rerender(); } }, v[0].toUpperCase() + v.slice(1)))),
     h('span', { class: 'grow' }),
     isJson ? h('span', { class: 'faint', style: { fontSize: '12px' } }, 'JSON') : h('span', { class: 'faint', style: { fontSize: '12px' } }, ct.split(';')[0] || ''),
-    h('button', { class: ['icon-btn', wrapOn && 'on'], title: wrapOn ? 'Turn off line wrap' : 'Wrap lines', style: wrapOn ? { color: 'var(--accent)' } : null, onclick: () => { t.wrap = !wrapOn; container.replaceWith(bodyView(res, t)); } }, icon('wrap')),
+    isJson && textual ? h('button', { class: ['icon-btn', t.jsonFilter != null && 'on'], title: 'Filter with JSONPath', style: t.jsonFilter != null ? { color: 'var(--accent)' } : null, onclick: () => { t.jsonFilter = t.jsonFilter == null ? '' : null; rerender(); } }, icon('filter')) : null,
+    textual ? h('button', { class: ['icon-btn', t.find?.open && 'on'], title: 'Find (⌘F)', style: t.find?.open ? { color: 'var(--accent)' } : null, onclick: () => { t.find = { ...(t.find || { q: '' }), open: !t.find?.open }; rerender(); } }, icon('search')) : null,
+    h('button', { class: ['icon-btn', wrapOn && 'on'], title: wrapOn ? 'Turn off line wrap' : 'Wrap lines', style: wrapOn ? { color: 'var(--accent)' } : null, onclick: () => { t.wrap = !wrapOn; rerender(); } }, icon('wrap')),
     h('button', { class: 'icon-btn', title: 'Copy', onclick: async () => { await navigator.clipboard.writeText(res.bodyText ?? ''); toast('Copied'); } }, icon('copy')));
-  container.append(tools);
+  // Toolbar plus the optional filter and find bars stay pinned together.
+  const head = h('div', { class: 'resp-sticky' }, tools);
+  container.append(head);
 
   if (view === 'preview' && isImage && res.bodyBase64) {
     container.append(h('img', { class: 'preview-img', src: `data:${ct.split(';')[0]};base64,${res.bodyBase64}` }));
@@ -608,19 +726,145 @@ function bodyView(res, t) {
   } else {
     const text = res.bodyText || '';
     const pre = h('pre', { class: ['body', wrapOn && 'wrap'] });
-    if (view === 'pretty' && isJson && text.length < 3_000_000) {
-      const parsed = safeParse(text);
-      const pretty = parsed !== undefined ? JSON.stringify(parsed, null, 2) : text;
+    const showJson = (pretty) => {
       pre.innerHTML = pretty.length < 1_500_000 ? highlightJson(pretty) : '';
       if (pretty.length >= 1_500_000) pre.textContent = pretty;
-    } else if (view === 'pretty' && (ct.includes('xml') || isHtml) && text.length < 1_000_000) {
-      pre.textContent = prettyXml(text);
+    };
+    const paintBody = () => {
+      if (view === 'pretty' && isJson && text.length < 3_000_000) {
+        const parsed = safeParse(text);
+        showJson(parsed !== undefined ? JSON.stringify(parsed, null, 2) : text);
+      } else if (view === 'pretty' && (ct.includes('xml') || isHtml) && text.length < 1_000_000) {
+        pre.textContent = prettyXml(text);
+      } else {
+        pre.textContent = text || '(empty body)';
+      }
+    };
+    let findBar = null;
+    if (isJson && t.jsonFilter != null) {
+      const msg = h('span', { class: 'faint filter-msg' });
+      const apply = () => {
+        const q = t.jsonFilter.trim();
+        msg.classList.remove('err');
+        if (!q) { msg.textContent = ''; paintBody(); findBar?.refresh(); return; }
+        const parsed = safeParse(text);
+        if (parsed === undefined) { msg.textContent = 'Body isn\'t valid JSON'; msg.classList.add('err'); return; }
+        try {
+          const hits = jsonPath(parsed, q);
+          msg.textContent = `${hits.length} match${hits.length === 1 ? '' : 'es'}`;
+          showJson(JSON.stringify(hits.length === 1 ? hits[0] : hits, null, 2) ?? 'undefined');
+        } catch (e) { msg.textContent = e.message; msg.classList.add('err'); }
+        findBar?.refresh();
+      };
+      let timer;
+      const input = h('input', { class: 'input mono', value: t.jsonFilter, placeholder: '$.data[*].id   ·   $..name   ·   $.items[?(@.price > 10)]', spellcheck: 'false', oninput: (e) => { t.jsonFilter = e.target.value; clearTimeout(timer); timer = setTimeout(apply, 150); }, onkeydown: (e) => { if (e.key === 'Escape') { t.jsonFilter = null; rerender(); } } });
+      head.append(h('div', { class: 'resp-tools filter-bar' }, h('span', { class: 'faint' }, 'Filter'), input, msg));
+      queueMicrotask(() => { if (!t.find?.open) input.focus(); });
+      paintBody();
+      if (t.jsonFilter.trim()) apply();
     } else {
-      pre.textContent = text || '(empty body)';
+      paintBody();
+    }
+    if (t.find?.open) {
+      findBar = findInBody(pre, t, () => { t.find.open = false; rerender(); });
+      head.append(findBar);
     }
     container.append(pre);
   }
   return container;
+}
+
+/**
+ * ⌘F inside a response body: highlights every match (CSS Custom Highlights where
+ * supported), steps through them, and scrolls the current one into view.
+ */
+function findInBody(pre, t, onClose) {
+  const f = t.find;
+  f.q = f.q || '';
+  f.i = f.i || 0;
+  let ranges = [];
+  const count = h('span', { class: 'faint find-count' });
+  const supported = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
+
+  const search = () => {
+    ranges = [];
+    const q = f.q;
+    if (q) {
+      const nodes = [];
+      let all = '';
+      const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) { nodes.push([n, all.length]); all += n.data; }
+      const hay = f.matchCase ? all : all.toLowerCase();
+      const needle = f.matchCase ? q : q.toLowerCase();
+      let k = 0;
+      const locate = (pos) => {
+        while (k < nodes.length - 1 && nodes[k + 1][1] <= pos) k++;
+        return [nodes[k][0], pos - nodes[k][1]];
+      };
+      for (let at = hay.indexOf(needle); at >= 0 && ranges.length < 5000; at = hay.indexOf(needle, at + needle.length)) {
+        const r = document.createRange();
+        const [sn, so] = locate(at);
+        const [en, eo] = locate(at + needle.length - 1);
+        r.setStart(sn, so);
+        r.setEnd(en, eo + 1);
+        ranges.push(r);
+      }
+    }
+    f.i = ranges.length ? Math.min(f.i, ranges.length - 1) : 0;
+    paint();
+  };
+  const paint = () => {
+    count.textContent = !f.q ? '' : ranges.length ? `${f.i + 1} of ${ranges.length}${ranges.length >= 5000 ? '+' : ''}` : 'No results';
+    if (supported) {
+      CSS.highlights.set('find', new Highlight(...ranges));
+      CSS.highlights.set('find-current', ranges[f.i] ? new Highlight(ranges[f.i]) : new Highlight());
+    }
+    const cur = ranges[f.i];
+    if (!cur) return;
+    if (!supported) { const sel = getSelection(); sel.removeAllRanges(); sel.addRange(cur); }
+    const scroller = pre.closest('.resp-body');
+    if (scroller) {
+      const rr = cur.getBoundingClientRect();
+      const cr = scroller.getBoundingClientRect();
+      if (rr.top < cr.top + 80 || rr.bottom > cr.bottom - 20) scroller.scrollTop += rr.top - cr.top - cr.height / 2;
+      if (rr.left < cr.left || rr.right > cr.right) scroller.scrollLeft += rr.left - cr.left - cr.width / 2;
+    }
+  };
+  const step = (d) => { if (ranges.length) { f.i = (f.i + d + ranges.length) % ranges.length; paint(); } };
+  let timer;
+  const input = h('input', { class: 'input', value: f.q, placeholder: 'Find in response', spellcheck: 'false',
+    oninput: (e) => { f.q = e.target.value; f.i = 0; clearTimeout(timer); timer = setTimeout(search, 120); },
+    onkeydown: (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); clear(); onClose(); }
+    } });
+  const caseBtn = h('button', { class: ['icon-btn', 'text-btn', f.matchCase && 'on'], title: 'Match case', onclick: () => { f.matchCase = !f.matchCase; caseBtn.classList.toggle('on', !!f.matchCase); search(); } }, 'Aa');
+  const clear = () => { if (supported) { CSS.highlights.delete('find'); CSS.highlights.delete('find-current'); } };
+  const bar = h('div', { class: 'resp-tools find-bar' }, icon('search'), input, count, caseBtn,
+    h('button', { class: 'icon-btn', title: 'Previous (⇧↵)', onclick: () => step(-1) }, icon('chevron', 'rot-up')),
+    h('button', { class: 'icon-btn', title: 'Next (↵)', onclick: () => step(1) }, icon('chevron', 'rot-down')),
+    h('button', { class: 'icon-btn', title: 'Close (Esc)', onclick: () => { clear(); onClose(); } }, icon('x')));
+  bar.refresh = search;
+  bar.focus = () => { input.focus(); input.select(); };
+  queueMicrotask(() => { search(); input.focus(); });
+  return bar;
+}
+
+/**
+ * pm.visualizer output: the Handlebars template rendered with the script's data,
+ * in a sandboxed frame (scripts allowed, no access to Dispatch). pm.getData works inside.
+ */
+function visualizerView(vis) {
+  const frame = h('iframe', { class: 'preview-frame visualizer-frame', sandbox: 'allow-scripts' });
+  const wrap = h('div', { class: 'visualizer-wrap' }, frame);
+  const fail = (msg) => wrap.replaceChildren(h('div', { class: 'note err', style: { margin: '14px' } }, icon('alert'), h('span', null, msg)));
+  loadVendor('handlebars').then((Handlebars) => {
+    let html;
+    try { html = Handlebars.compile(vis.template, vis.options || {})(vis.data); } catch (e) { return fail(`Visualizer template error: ${e.message}`); }
+    const data = JSON.stringify(vis.data ?? {}).replace(/</g, '\\u003c');
+    frame.srcdoc = `<!doctype html><meta charset="utf-8"><script>window.pm={getData:function(cb){cb(null,${data});}};</script>${html}`;
+  }, (e) => fail(errText(e)));
+  return wrap;
 }
 
 function safeParse(s) { try { return JSON.parse(s); } catch { return undefined; } }
@@ -638,19 +882,9 @@ function prettyXml(xml) {
 
 async function saveExample(t) {
   const res = t.response?.response;
-  if (!res) return;
-  const name = `${res.status} ${res.statusText || ''}`.trim();
-  t.draft.response = t.draft.response || [];
-  t.draft.response.push({
-    name,
-    originalRequest: clone(t.draft.request),
-    status: res.statusText,
-    code: res.status,
-    _postman_previewlanguage: (res.contentType || '').includes('json') ? 'json' : 'text',
-    header: res.headers.map((x) => ({ key: x.key, value: x.value })),
-    cookie: [],
-    body: res.bodyText ?? '',
-  });
-  C.markDirty(t);
-  await C.saveTab(t);
+  const entry = t.ref?.col && S.collectionEntry(t.ref.col);
+  if (!res || !entry) return;
+  try {
+    await C.addExample(entry, t.ref.item, exampleFromResponse(t.draft.request, res));
+  } catch (e) { toast(errText(e), { error: true }); }
 }

@@ -1,17 +1,34 @@
-import { h, icon, showMenu, promptDialog, toast, errText, methodClass, methodLabel, relTime, confirmDialog } from './dom.js';
+import { h, icon, showMenu, pickerMenu, closeMenu, modal, promptDialog, toast, errText, methodClass, methodLabel, relTime, confirmDialog } from './dom.js';
 import * as S from '../store.js';
+import { bridge } from '../bridge.js';
 import { state } from '../store.js';
 import * as C from '../ctx.js';
-import { isFolder, itemId, urlObject, clone } from '../model.js';
+import { mockFor } from '../mockserver.js';
+import { linkToFolder, unlinkFolder, openFolder, checkFolders } from '../folderlink.js';
+import { isFolder, itemId, exampleId, newExample, urlObject, clone } from '../model.js';
 
 let sideTab = 'collections';
 let filter = '';
 
 export function renderSidebar(root) {
-  const wsSelect = h('select', { class: 'select ws-select', title: 'Workspace', onchange: async (e) => {
-    state.settings.wsChosen = true;
-    await S.openWorkspace(e.target.value).catch((err) => toast(errText(err), { error: true }));
-  } }, state.workspaces.map((w) => h('option', { value: w.id, selected: w.id === state.ws?.id }, w.name)));
+  const current = state.workspaces.find((w) => w.id === state.ws?.id);
+  const wsSelect = h('button', {
+    class: 'select ws-select', title: 'Workspace',
+    // Keep the open picker from closing on mousedown so a second click toggles it shut.
+    onmousedown: (e) => e.stopPropagation(),
+    onclick: () => {
+      if (wsSelect.classList.contains('menu-open')) return closeMenu();
+      pickerMenu(wsSelect, {
+        placeholder: 'Search workspaces',
+        current: state.ws?.id,
+        items: state.workspaces.map((w) => ({ id: w.id, label: w.name, hint: w.type && w.type !== 'local' ? w.type[0].toUpperCase() + w.type.slice(1) : '' })),
+        onPick: async (w) => {
+          state.settings.wsChosen = true;
+          await S.openWorkspace(w.id).catch((err) => toast(errText(err), { error: true }));
+        },
+      });
+    },
+  }, h('span', { class: 'ellipsis' }, current?.name || 'Workspace'));
 
   const syncBtn = h('button', {
     class: 'icon-btn', title: state.hasKey ? 'Sync with Postman' : 'Connect Postman to sync',
@@ -32,7 +49,7 @@ export function renderSidebar(root) {
     search,
     sideTab === 'history'
       ? h('button', { class: 'icon-btn', title: 'Clear history', onclick: async () => { if (await confirmDialog({ title: 'Clear history?', message: 'This removes every request from your local history.', confirm: 'Clear', danger: true })) S.clearHistory(); } }, icon('trash'))
-      : h('button', { class: 'icon-btn', title: 'Import a Postman collection or environment file', onclick: doImport }, icon('download')));
+      : h('button', { class: 'icon-btn', title: 'Import (Postman, OpenAPI, Insomnia, HAR)', onclick: doImport }, icon('download')));
 
   const list = h('div', { class: 'side-content' });
   const foot = footer();
@@ -76,30 +93,60 @@ function profileChip() {
     h('span', { class: 'grow ellipsis' }, p.name));
 }
 
-async function doImport() {
-  try {
-    const r = await S.importFromFile();
-    if (r) toast(`Imported ${r.kind} "${r.name}"${S.isCloud() ? ' and uploaded it to Postman' : ''}`);
-  } catch (e) { toast(errText(e), { error: true }); }
+const importedMsg = (r) => `Imported ${r.format && r.format !== 'Postman' ? `${r.format} as ` : ''}${r.kind} "${r.name}"${r.environments ? ` with ${r.environments} environment${r.environments === 1 ? '' : 's'}` : ''}${S.isCloud() ? ' and uploaded it to Postman' : ''}`;
+
+/** Import from a file, pasted text, or a URL to a spec. */
+export function doImport() {
+  const ta = h('textarea', { class: 'textarea mono', rows: 9, spellcheck: 'false', placeholder: 'Paste a Postman collection or environment, an OpenAPI/Swagger spec (JSON or YAML), an Insomnia export or a HAR file, or a link to one.' });
+  const status = h('p', { class: 'hint', style: { minHeight: '18px', margin: '8px 0 0' } }, 'Supports Postman v2.0/v2.1, OpenAPI 3, Swagger 2, Insomnia v4/v5 and HAR.');
+  const done = (r) => { if (r) toast(importedMsg(r)); close(); };
+  const fail = (e) => { status.textContent = errText(e); status.style.color = 'var(--err)'; };
+  const fromText = async () => {
+    const text = ta.value.trim();
+    if (!text) return fail(new Error('Paste something to import, or choose a file.'));
+    try {
+      if (/^https?:\/\/\S+$/i.test(text)) {
+        status.textContent = 'Downloading…';
+        status.style.color = '';
+        const res = await bridge.send({ method: 'GET', url: text, headers: [{ key: 'Accept', value: 'application/json, application/yaml, text/yaml, */*' }], body: { mode: 'none' }, settings: { timeoutMs: 30000, followRedirects: true, verifySsl: state.settings.verifySsl !== false } });
+        if (res.status >= 400) throw new Error(`The link returned ${res.status} ${res.statusText || ''}`.trim());
+        done(await S.importText(res.bodyText || '', text.split('?')[0]));
+      } else {
+        done(await S.importText(text));
+      }
+    } catch (e) { fail(e); }
+    return false;
+  };
+  const close = modal({
+    title: 'Import',
+    wide: true,
+    body: h('div', null, ta, status),
+    actions: [
+      { label: 'Choose file…', onClick: async () => { try { const r = await S.importFromFile(); if (r) done(r); } catch (e) { fail(e); } return false; } },
+      { label: 'Import', primary: true, onClick: fromText },
+    ],
+  });
 }
 
 function newMenu(e) {
   showMenu(e, [
     { label: 'New request', icon: 'send', key: '⌘T', onClick: () => C.openDraft() },
+    { label: 'New gRPC request', icon: 'layers', onClick: () => C.openGrpc() },
     { label: 'New collection', icon: 'box', onClick: newCollection },
     { label: 'New environment', icon: 'globe', onClick: newEnvironment },
     '-',
-    { label: 'Import file…', icon: 'download', onClick: doImport },
+    { label: 'Import…', icon: 'download', onClick: doImport },
+    { label: 'Open collection from folder…', icon: 'folderOpen', onClick: () => openFolder().then((e) => e && toast(`Opened "${e.name}" from ${e.linkedDir}`), (er) => toast(errText(er), { error: true })) },
   ]);
 }
 
-async function newCollection() {
+export async function newCollection() {
   const name = await promptDialog({ title: 'New collection', label: S.isCloud() ? `It will be created in "${state.ws.name}" in Postman.` : 'It will be stored on this device only.', value: 'New Collection' });
   if (!name) return;
   try { const entry = await S.createCollection(name); C.toggleExpanded(entry.uid, true); sideTab = 'collections'; } catch (e) { toast(errText(e), { error: true }); }
 }
 
-async function newEnvironment() {
+export async function newEnvironment() {
   const name = await promptDialog({ title: 'New environment', value: 'New Environment' });
   if (!name) return;
   try { const env = await S.createEnvironment(name); sideTab = 'environments'; C.openEnv(env); } catch (e) { toast(errText(e), { error: true }); }
@@ -138,6 +185,10 @@ function collectionRow(entry, isOpen, active) {
     : entry.conflict ? h('span', { class: 'badge err', title: 'Changed in Postman and here' }, 'conflict')
     : entry.deletedRemotely ? h('span', { class: 'badge err', title: 'Deleted in Postman' }, 'deleted')
     : entry.dirty && S.isCloud() ? h('span', { class: 'badge dirty', title: 'Local changes not yet in Postman' }, 'unsynced') : null;
+  const extra = [
+    entry.folderError ? h('span', { class: 'badge err', title: entry.folderError }, 'folder') : entry.linkedDir ? h('span', { class: 'badge local', title: `Saved to ${entry.linkedDir}` }, 'git') : null,
+    mockFor(entry) ? h('span', { class: 'badge ok', title: `Mock server on http://localhost:${mockFor(entry).port}` }, `mock :${mockFor(entry).port}`) : null,
+  ];
   const row = h('div', {
     class: ['tree-row col', active?.kind === 'container' && active.ref.col === entry.uid && !active.ref.item && 'selected'],
     style: { '--depth': 0 },
@@ -150,7 +201,7 @@ function collectionRow(entry, isOpen, active) {
     icon('chevron', `chev${isOpen ? ' open' : ''}`),
     icon('box', 'ico'),
     h('span', { class: 'name', title: entry.name }, entry.name),
-    status,
+    status, ...extra,
     h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', title: 'More', onclick: (e) => { e.stopPropagation(); colMenu(e, entry, row); } }, icon('more'))));
   dropTarget(row, entry, null);
   return row;
@@ -162,6 +213,13 @@ function colMenu(e, entry, row) {
     { label: 'Add folder', icon: 'folder', onClick: async () => { const n = await promptDialog({ title: 'New folder', value: 'New Folder' }); if (n) C.addFolder(entry, null, n); } },
     { label: 'Settings, auth & variables', icon: 'gear', onClick: () => C.openContainer(entry) },
     { label: 'Run collection', icon: 'play', onClick: () => C.openRunner(entry, null) },
+    { label: 'Request chain', icon: 'link', onClick: () => C.openChain(entry) },
+    { label: mockFor(entry) ? `Mock server (running on :${mockFor(entry).port})` : 'Mock server…', icon: 'layers', onClick: () => C.openMock(entry) },
+    '-',
+    entry.linkedDir
+      ? { label: 'Reload from folder', icon: 'sync', onClick: () => checkFolders().then(() => toast('Folder checked')) }
+      : { label: 'Save to a folder (Git)…', icon: 'folder', onClick: () => linkToFolder(entry).catch((er) => toast(errText(er), { error: true })) },
+    entry.linkedDir ? { label: 'Stop saving to folder', icon: 'x', onClick: () => { unlinkFolder(entry); toast('The files stay where they are; changes are no longer written there.'); } } : null,
     '-',
     { label: 'Rename', icon: 'edit', onClick: async () => { await S.ensureCollection(entry); const n = await promptDialog({ title: 'Rename collection', value: entry.name, confirm: 'Rename' }); if (n) C.renameItem(entry, null, n); } },
     { label: 'Export…', icon: 'upload', onClick: async () => { try { const p = await S.exportCollection(entry); if (p) toast(`Exported to ${p}`); } catch (er) { toast(errText(er), { error: true }); } } },
@@ -202,13 +260,17 @@ function itemsRows(entry, items, depth, open, active) {
     } else {
       const m = it.request?.method || 'GET';
       const tab = C.findTab((t) => t.kind === 'request' && t.ref?.col === entry.uid && t.ref.item === id);
+      const examples = it.response || [];
+      const exOpen = examples.length > 0 && open.includes(`ex:${id}`);
+      const chev = examples.length ? icon('chevron', `chev${exOpen ? ' open' : ''}`) : h('span', { class: 'chev blank', style: { width: '0' } });
+      if (examples.length) chev.addEventListener('click', (e) => { e.stopPropagation(); C.toggleExpanded(`ex:${id}`); });
       const row = h('div', {
         class: ['tree-row', active && active === tab && 'selected'],
         style: { '--depth': depth }, draggable: 'true',
         onclick: () => C.openItem(entry, id),
         oncontextmenu: (e) => { e.preventDefault(); reqMenu(e, entry, it, row); },
       },
-        h('span', { class: 'chev blank', style: { width: '0' } }),
+        chev,
         h('span', { class: ['method', methodClass(m)] }, methodLabel(m)),
         h('span', { class: 'name', title: it.name }, it.name),
         tab?.dirty ? h('span', { class: 'sync-dot busy', title: 'Unsaved changes' }) : null,
@@ -216,9 +278,37 @@ function itemsRows(entry, items, depth, open, active) {
       dragSource(row, entry, id);
       dropTarget(row, entry, id, false);
       rows.push(row);
+      if (exOpen) rows.push(...examples.map((ex) => exampleRow(entry, it, ex, depth + 1, active)));
     }
   }
   return rows;
+}
+
+function exampleRow(entry, it, ex, depth, active) {
+  const exId = exampleId(ex);
+  const row = h('div', {
+    class: ['tree-row', active?.kind === 'example' && active.ref.col === entry.uid && active.ref.ex === exId && 'selected'],
+    style: { '--depth': depth },
+    onclick: () => C.openExample(entry, itemId(it), exId),
+    oncontextmenu: (e) => { e.preventDefault(); exampleMenu(e, entry, it, ex, row); },
+  },
+    icon('file', 'ico'),
+    h('span', { class: 'name', title: ex.name }, ex.name || 'Untitled example'),
+    ex.code ? h('span', { class: ['status-pill', `s${String(ex.code)[0]}`], style: { fontSize: '11px' } }, ex.code) : null,
+    h('span', { class: 'actions' }, h('button', { class: 'icon-btn sm', onclick: (e) => { e.stopPropagation(); exampleMenu(e, entry, it, ex, row); } }, icon('more'))));
+  return row;
+}
+
+function exampleMenu(e, entry, it, ex, row) {
+  const id = itemId(it);
+  const exId = exampleId(ex);
+  showMenu(e, [
+    { label: 'Open', icon: 'file', onClick: () => C.openExample(entry, id, exId) },
+    { label: 'Rename', icon: 'edit', onClick: async () => { const n = await promptDialog({ title: 'Rename example', value: ex.name, confirm: 'Rename' }); if (n) C.renameExample(entry, id, exId, n); } },
+    { label: 'Duplicate', icon: 'copy', onClick: () => C.duplicateExample(entry, id, exId) },
+    '-',
+    { label: 'Delete', icon: 'trash', danger: true, onClick: () => C.removeExample(entry, id, exId) },
+  ], row);
 }
 
 function folderMenu(e, entry, it, row) {
@@ -240,6 +330,7 @@ function reqMenu(e, entry, it, row) {
     { label: 'Open', icon: 'send', onClick: () => C.openItem(entry, it.id) },
     { label: 'Rename', icon: 'edit', onClick: async () => { const n = await promptDialog({ title: 'Rename request', value: it.name, confirm: 'Rename' }); if (n) C.renameItem(entry, it.id, n); } },
     { label: 'Duplicate', icon: 'copy', onClick: () => C.duplicate(entry, it.id) },
+    { label: 'Add example', icon: 'file', onClick: () => C.addExample(entry, it.id, newExample(it.request)).catch((er) => toast(errText(er), { error: true })) },
     '-',
     { label: 'Delete', icon: 'trash', danger: true, onClick: () => C.removeItem(entry, it.id) },
   ], row);
@@ -290,6 +381,8 @@ function environmentsView() {
         e.stopPropagation();
         try { await S.pushGlobals(); toast('Globals synced to Postman'); } catch (er) { if (er instanceof S.ConflictError) C.handleConflict(er); else toast(errText(er), { error: true }); }
       } }, icon('cloudUp'))) : null),
+    h('div', { class: ['tree-row', tab?.kind === 'vault' && 'selected'], onclick: () => C.openVault() },
+      icon('key', 'ico'), h('span', { class: 'name' }, 'Vault'), h('span', { class: 'faint', style: { fontSize: '11px' } }, `${(state.settings.vaultKeys || []).length || ''}`)),
     h('div', { class: 'group-label' }, 'Environments'),
   ];
   if (!envs.length) rows.push(h('div', { class: 'side-empty' }, h('p', null, 'No environments yet.'), h('button', { class: 'btn sm', onclick: newEnvironment }, 'New environment')));

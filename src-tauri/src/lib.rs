@@ -1,4 +1,10 @@
+mod ai;
+mod cookies;
+mod folders;
+mod grpc;
 mod http;
+mod loadtest;
+mod mock;
 mod postman;
 mod secrets;
 mod ws;
@@ -32,9 +38,183 @@ async fn send_request(
     http::send(&state, request).await
 }
 
+/// Sends a request; streaming responses (SSE, NDJSON) are relayed live on `on_event`.
+#[tauri::command]
+async fn send_request_stream(
+    state: State<'_, http::HttpState>,
+    request: http::OutgoingRequest,
+    id: String,
+    on_event: tauri::ipc::Channel<http::StreamEvent>,
+) -> Result<http::IncomingResponse, String> {
+    let cancel: std::sync::Arc<tokio::sync::Notify> = Default::default();
+    state.streams.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cancel.clone());
+    let sink = http::StreamSink { on_event: Box::new(move |e| { let _ = on_event.send(e); }), cancel };
+    let out = http::send_with(&state, request, Some(&sink)).await;
+    state.streams.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+    out
+}
+
+/// Stops a streaming response started with send_request_stream.
+#[tauri::command]
+fn stop_request(state: State<'_, http::HttpState>, id: String) -> bool {
+    match state.streams.lock().unwrap_or_else(|p| p.into_inner()).get(&id) {
+        Some(n) => { n.notify_one(); true }
+        None => false,
+    }
+}
+
 #[tauri::command]
 fn clear_cookies(state: State<'_, http::HttpState>) {
-    state.clear_cookies();
+    state.jar.clear();
+}
+
+#[tauri::command]
+fn list_cookies(state: State<'_, http::HttpState>) -> Vec<cookies::CookieInfo> {
+    state.jar.list()
+}
+
+#[tauri::command]
+fn set_cookie(state: State<'_, http::HttpState>, cookie: cookies::CookieInput) -> Result<(), String> {
+    state.jar.set(cookie)
+}
+
+#[tauri::command]
+fn delete_cookie(state: State<'_, http::HttpState>, domain: String, path: String, name: String) -> bool {
+    state.jar.delete(&domain, &path, &name)
+}
+
+// ---------- AI assistant ----------
+
+/// Verifies the Anthropic API key, then keeps it in the keychain.
+#[tauri::command]
+async fn ai_set_key(app: AppHandle, key: String) -> Result<(), String> {
+    let key = key.trim().to_string();
+    ai::verify_key(&key).await?;
+    secrets::store_set(&data_dir(&app)?, ai::KEY_SLOT, &key)
+}
+
+#[tauri::command]
+fn ai_has_key(app: AppHandle) -> Result<bool, String> {
+    Ok(secrets::store_get(&data_dir(&app)?, ai::KEY_SLOT)?.is_some_and(|k| !k.is_empty()))
+}
+
+#[tauri::command]
+fn ai_delete_key(app: AppHandle) -> Result<(), String> {
+    secrets::store_set(&data_dir(&app)?, ai::KEY_SLOT, "")
+}
+
+/// Asks Claude; text streams on `on_event`. Stop it with stop_request(id).
+#[tauri::command]
+async fn ai_ask(
+    app: AppHandle,
+    state: State<'_, http::HttpState>,
+    request: ai::Ask,
+    id: String,
+    on_event: tauri::ipc::Channel<ai::AiEvent>,
+) -> Result<ai::Answer, String> {
+    let key = secrets::store_get(&data_dir(&app)?, ai::KEY_SLOT)?.filter(|k| !k.is_empty())
+        .ok_or_else(|| "Add your Anthropic API key under Settings → AI assistant first.".to_string())?;
+    let cancel: std::sync::Arc<tokio::sync::Notify> = Default::default();
+    state.streams.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), cancel.clone());
+    let out = ai::ask(&key, request, cancel, move |e| { let _ = on_event.send(e); }).await;
+    state.streams.lock().unwrap_or_else(|p| p.into_inner()).remove(&id);
+    out
+}
+
+// ---------- gRPC ----------
+
+#[tauri::command]
+async fn grpc_describe(state: State<'_, grpc::GrpcState>, source: grpc::Source) -> Result<Vec<grpc::ServiceInfo>, String> {
+    state.describe(&source).await
+}
+
+#[tauri::command]
+async fn grpc_call(
+    state: State<'_, grpc::GrpcState>,
+    source: grpc::Source,
+    method: String,
+    message: String,
+    on_message: tauri::ipc::Channel<String>,
+) -> Result<grpc::CallResult, String> {
+    state.call(&source, &method, &message, move |m| { let _ = on_message.send(m); }).await
+}
+
+/// Lets the user pick .proto files for a gRPC request.
+#[tauri::command]
+async fn pick_proto_files(app: AppHandle) -> Result<Vec<String>, String> {
+    let picked = app.dialog().file().add_filter("Protocol Buffers", &["proto"]).blocking_pick_files().unwrap_or_default();
+    picked.into_iter().map(|f| f.into_path().map(|p| p.to_string_lossy().to_string()).map_err(|e| e.to_string())).collect()
+}
+
+// ---------- Load tests ----------
+
+#[tauri::command]
+async fn loadtest_run(
+    tests: State<'_, loadtest::LoadTests>,
+    id: String,
+    request: http::OutgoingRequest,
+    config: loadtest::Config,
+    on_progress: tauri::ipc::Channel<loadtest::Report>,
+) -> Result<loadtest::Report, String> {
+    tests.run(id, request, config, move |r| { let _ = on_progress.send(r); }).await
+}
+
+#[tauri::command]
+fn loadtest_stop(tests: State<'_, loadtest::LoadTests>, id: String) -> bool {
+    tests.stop(&id)
+}
+
+// ---------- Mock servers ----------
+
+#[tauri::command]
+async fn mock_start(
+    mocks: State<'_, mock::Mocks>,
+    id: String,
+    port: u16,
+    routes: Vec<mock::Route>,
+    on_log: tauri::ipc::Channel<mock::LogEntry>,
+) -> Result<u16, String> {
+    mocks.start(id, port, routes, std::sync::Arc::new(move |e| { let _ = on_log.send(e); })).await
+}
+
+#[tauri::command]
+fn mock_update(mocks: State<'_, mock::Mocks>, id: String, routes: Vec<mock::Route>) -> bool {
+    mocks.update(&id, routes)
+}
+
+#[tauri::command]
+fn mock_stop(mocks: State<'_, mock::Mocks>, id: String) -> bool {
+    mocks.stop(&id)
+}
+
+#[tauri::command]
+fn mock_list(mocks: State<'_, mock::Mocks>) -> Vec<(String, u16)> {
+    mocks.list()
+}
+
+// ---------- Collections as folders (Git) ----------
+
+/// Shows the folder picker; the chosen folder becomes writable for folder_write.
+#[tauri::command]
+async fn pick_folder(app: AppHandle, folders: State<'_, folders::Folders>) -> Result<Option<String>, String> {
+    let Some(fp) = app.dialog().file().blocking_pick_folder() else { return Ok(None) };
+    let path = fp.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(folders.allow(&path)?.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+fn folder_read(folders: State<'_, folders::Folders>, dir: String) -> Result<Vec<folders::FileEntry>, String> {
+    folders.read(&dir)
+}
+
+#[tauri::command]
+fn folder_write(folders: State<'_, folders::Folders>, dir: String, files: Vec<folders::FileEntry>, prune: bool) -> Result<usize, String> {
+    folders.write(&dir, &files, prune)
+}
+
+#[tauri::command]
+fn folder_forget(folders: State<'_, folders::Folders>, dir: String) {
+    folders.forget(&dir)
 }
 
 // ---------- Postman ----------
@@ -182,7 +362,7 @@ fn store_write(app: AppHandle, name: String, value: Value) -> Result<(), String>
 
 #[tauri::command]
 async fn open_text_file(app: AppHandle) -> Result<Option<Value>, String> {
-    let picked = app.dialog().file().add_filter("Postman JSON", &["json"]).blocking_pick_file();
+    let picked = app.dialog().file().add_filter("Collections and API specs", &["json", "yaml", "yml", "har"]).blocking_pick_file();
     let Some(fp) = picked else { return Ok(None) };
     let path = fp.into_path().map_err(|e| e.to_string())?;
     let content = tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
@@ -225,10 +405,36 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .manage(http::HttpState::new())
+        .manage(mock::Mocks::default())
+        .manage(loadtest::LoadTests::default())
+        .manage(grpc::GrpcState::default())
+        .manage(folders::Folders::default())
         .manage(ws::new())
         .invoke_handler(tauri::generate_handler![
             send_request,
+            send_request_stream,
+            stop_request,
             clear_cookies,
+            list_cookies,
+            set_cookie,
+            delete_cookie,
+            ai_set_key,
+            ai_has_key,
+            ai_delete_key,
+            ai_ask,
+            grpc_describe,
+            grpc_call,
+            pick_proto_files,
+            loadtest_run,
+            loadtest_stop,
+            mock_start,
+            mock_update,
+            mock_stop,
+            mock_list,
+            pick_folder,
+            folder_read,
+            folder_write,
+            folder_forget,
             postman_api,
             set_api_key,
             has_api_key,
@@ -250,6 +456,11 @@ pub fn run() {
             save_binary_file,
         ])
         .setup(|app| {
+            // Persistent cookies live next to the rest of the app data.
+            if let Ok(dir) = data_dir(app.handle()) {
+                app.state::<http::HttpState>().jar.attach(dir.join("cookies.json"));
+                app.state::<folders::Folders>().attach(dir.join("linked-folders.json"));
+            }
             // Optional evaluator endpoint for benchmarking the real UI:
             // DISPATCH_TEST_HOOK=9944 runs a local-only HTTP server whose POST
             // body is evaluated as JavaScript inside the main webview.

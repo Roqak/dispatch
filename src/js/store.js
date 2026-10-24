@@ -2,7 +2,9 @@
 
 import { bridge, region, callCtx } from './bridge.js';
 import * as cloud from './sync.js';
-import { clone, newCollection, normaliseImport, forExport, ensureIds, uuid } from './model.js';
+import { clone, newCollection, forExport, ensureIds, uuid } from './model.js';
+import { convertImport } from './importers.js';
+import { loadVendor } from './vendor.js';
 
 export const LOCAL_WS = { id: 'local', name: 'On this device (not synced)', type: 'local' };
 
@@ -43,6 +45,10 @@ const listeners = new Map();
 export function on(evt, fn) { (listeners.get(evt) || listeners.set(evt, new Set()).get(evt)).add(fn); }
 export function emit(...evts) { for (const e of evts) listeners.get(e)?.forEach((fn) => fn()); }
 
+/** Called with a collection entry whenever its contents change (edits, pulls). */
+export const collectionHooks = new Set();
+const collectionTouched = (entry) => { for (const fn of collectionHooks) { try { fn(entry); } catch (e) { console.error(e); } } };
+
 // ---------- persistence ----------
 const timers = {};
 function persist(name, getValue, ms = 300) {
@@ -56,7 +62,7 @@ export const saveHistory = () => persist('history', () => state.history, 800);
 
 function serialTab(t) {
   // Responses can be large; keep them out of the saved tab list.
-  const { response, running, ...rest } = t;
+  const { response, running, stream, ...rest } = t;
   if (rest.wsConn) {
     // Connections die with the process; keep the frame log for review only.
     rest.wsConn = { status: 'disconnected', log: rest.wsConn.log || [] };
@@ -357,6 +363,7 @@ export async function pullCollection(entry, { ws = state.ws, discard = false } =
   delete entry.deletedRemotely;
   saveWorkspace(ws);
   emit('sidebar', 'tabs-refresh');
+  collectionTouched(entry);
   return entry;
 }
 
@@ -376,6 +383,7 @@ export async function collectionChanged(entry, { push = state.settings.syncMode 
   if (entry.data?.info) entry.name = entry.data.info.name;
   saveWorkspace();
   emit('sidebar');
+  collectionTouched(entry);
   if (push && isCloud() && state.hasKey) return pushCollection(entry);
 }
 
@@ -489,14 +497,17 @@ export function removeLocalCollection(entry) {
 export async function importFromFile() {
   const file = await bridge.openTextFile();
   if (!file) return null;
-  let json;
-  try { json = JSON.parse(file.content); } catch { throw new Error("That file isn't valid JSON."); }
-  const parsed = normaliseImport(json);
+  return importText(file.content, file.path || '');
+}
+
+/** Import Postman, OpenAPI/Swagger, Insomnia or HAR content into this workspace. */
+export async function importText(text, fileName = '') {
+  const isJson = /^\s*[{[]/.test(String(text).replace(/^﻿/, ''));
+  const yaml = isJson ? undefined : await loadVendor('yaml').catch(() => undefined);
+  const parsed = convertImport(text, { fileName, yaml });
   if (parsed.kind === 'environment') {
-    const env = { uid: `local-${uuid()}`, name: parsed.data.name, data: { name: parsed.data.name, values: parsed.data.values || [] }, overlay: {}, dirty: true, pendingCreate: isCloud() };
-    state.ws.environments.push(env);
-    await environmentChanged(env);
-    return { kind: 'environment', name: env.name };
+    const env = await addImportedEnvironment(parsed.data.name, parsed.data.values || []);
+    return { kind: 'environment', name: env.name, format: parsed.format };
   }
   const data = freshIds(parsed.data); // importing the same file twice must not share ids
   delete data.info.updatedAt;
@@ -504,8 +515,16 @@ export async function importFromFile() {
   state.ws.collections.push(entry);
   saveWorkspace();
   emit('sidebar');
+  for (const e of parsed.environments || []) await addImportedEnvironment(e.name, e.values);
   if (isCloud() && state.hasKey) await pushCollection(entry);
-  return { kind: 'collection', name: entry.name };
+  return { kind: 'collection', name: entry.name, format: parsed.format, environments: (parsed.environments || []).length };
+}
+
+async function addImportedEnvironment(name, values) {
+  const env = { uid: `local-${uuid()}`, name, data: { name, values }, overlay: {}, dirty: true, pendingCreate: isCloud() };
+  state.ws.environments.push(env);
+  await environmentChanged(env);
+  return env;
 }
 
 export async function exportCollection(entry) {

@@ -1,7 +1,7 @@
 // The collection runner: batch requests through the normal send pipeline,
 // against optional data rows, with a results matrix and run history.
 
-import { clone, findItem, isFolder, itemId } from './model.js';
+import { findItem, isFolder, itemId, exampleFromResponse } from './model.js';
 import { Scope } from './vars.js';
 import { execute } from './send.js';
 import { bridge } from './bridge.js';
@@ -59,11 +59,11 @@ export function parseDataFile(text) {
   return rows;
 }
 
-const runnerScopes = ({ ws, env, collection, row, iteration }) => ({
+const runnerScopes = ({ ws, env, collection, colOverlay, row, iteration }) => ({
   local: new Scope([], {}),
   data: row ? new Scope(Object.entries(row).map(([k, v]) => ({ key: k, value: String(v), enabled: true })), {}, null, `Data · iteration ${iteration}`) : undefined,
   environment: new Scope(env?.data?.values || [], env?.overlay || {}, null, env?.name),
-  collection: new Scope(collection?.variable || [], {}, null, collection?.info?.name),
+  collection: new Scope(collection?.variable || [], colOverlay, null, collection?.info?.name),
   globals: new Scope(ws.globals.values || [], ws.globals.overlay || {}, null, 'Globals'),
 });
 
@@ -71,13 +71,14 @@ const runnerScopes = ({ ws, env, collection, row, iteration }) => ({
  * Run every request of a collection or folder. `iterations` applies when
  * there are no data rows; with rows, one iteration runs per row.
  * opts: { entry, folderId, iterations, rows, delayMs, onProgress, isStopped,
- *         env, send, parallel, saveExamples ('none' | 'failed') }
+ *         env, send, parallel, saveExamples ('none' | 'failed'),
+ *         ws (globals/overlays; defaults to the open workspace), recordHistory }
  * Cancellation: throws nothing — returns a cancelled summary.
  */
-export async function runBatch({ entry, folderId = null, iterations = 1, rows = [], delayMs = 0, onProgress, isStopped, env, send, parallel = false, saveExamples = 'none' }) {
+export async function runBatch({ entry, folderId = null, iterations = 1, rows = [], delayMs = 0, onProgress, isStopped, env, send, parallel = false, saveExamples = 'none', ws: wsIn, recordHistory = true }) {
   await S.ensureCollection(entry);
   const collection = entry.data;
-  const ws = state.ws || { globals: { values: [], overlay: {}, dirty: false }, colOverlays: {} };
+  const ws = wsIn || state.ws || { globals: { values: [], overlay: {}, dirty: false }, colOverlays: {} };
   env = env === null ? null : (env ?? S.activeEnvEntry());
   if (env && !env.data) { try { await S.pullEnvironment(env); } catch { /* fall back to values */ } if (env && !env.data) env = null; }
   const reqs = flattenRequests(collection, folderId);
@@ -95,9 +96,13 @@ export async function runBatch({ entry, folderId = null, iterations = 1, rows = 
     // Parallel iterations share nothing: overlays are cloned so scripts that
     // write current values never race.
     const cloneOverlays = parallel && i > 0;
+    // Collection current values carry from request to request, as in Postman.
+    const colOverlays = (ws.colOverlays = ws.colOverlays || {});
+    const colOverlay = (colOverlays[entry.uid] = colOverlays[entry.uid] || {});
     const scopeSet = runnerScopes({
-      ws: cloneOverlays ? ({ ...ws, globals: { ...ws.globals, overlay: { ...(ws.globals.overlay || {}) } }, colOverlays: { ...(ws.colOverlays || {}) } }) : ws,
+      ws: cloneOverlays ? ({ ...ws, globals: { ...ws.globals, overlay: { ...(ws.globals.overlay || {}) } } }) : ws,
       env: cloneOverlays && env ? { ...env, overlay: { ...(env.overlay || {}) } } : env,
+      colOverlay: cloneOverlays ? { ...colOverlay } : colOverlay,
       collection, row, iteration: i + 1,
     });
     let result;
@@ -107,12 +112,13 @@ export async function runBatch({ entry, folderId = null, iterations = 1, rows = 
         scopes: scopeSet,
         settings: state.settings,
         send: send ?? ((r) => bridge.send(r)),
-        libs: globalThis.chai ? { chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._ } : undefined,
+        libs: globalThis.chai ? { chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._, loadExtra: () => (typeof document === 'undefined' ? Promise.resolve() : import('./vendor.js').then((v) => v.loadVendor('pmlibs'))) } : undefined,
+        run: { iteration: i, iterationCount: total },
       });
     } catch (e) {
       result = { error: String(e?.message || e), tests: [], logs: [], notes: [], scriptErrors: [] };
     }
-    S.addHistory({
+    if (recordHistory) S.addHistory({
       name: item.name, method: item.request?.method || 'GET',
       url: result.outgoing?.url || '', status: result.response?.status ?? null,
       timeMs: result.response?.timeMs ?? null, error: result.error || null,
@@ -125,9 +131,13 @@ export async function runBatch({ entry, folderId = null, iterations = 1, rows = 
       testsTotal: result.tests?.length ?? 0,
       testsPassed: (result.tests || []).filter((x) => x.passed).length,
       failures: (result.tests || []).filter((x) => x.passed === false).map((x) => x.name),
+      tests: (result.tests || []).map((x) => ({ name: x.name, passed: x.passed, skipped: !!x.skipped, error: x.error || null })),
+      url: result.outgoing?.url || '',
       error: result.error ?? null,
       notes: result.notes ?? [],
+      nextRequest: result.nextRequest,
     };
+    if (parallel && result.nextRequest !== undefined) res.notes.push('setNextRequest is ignored when iterations run in parallel.');
     if (saveExamples === 'failed' && result.response && (res.status == null || res.status >= 400 || (result.tests || []).some((x) => x.passed === false))) {
       examplePlan.push({ item, response: result.response, result: res });
       res.exampleSaved = false; // set true once applied
@@ -142,7 +152,7 @@ export async function runBatch({ entry, folderId = null, iterations = 1, rows = 
     for (let i = 0; i < total; i++) {
       for (let j = 0; j < reqs.length; j++) {
         if (isStopped?.()) { stopped = true; break; }
-        tasks.push(runOne(i, j, reqs[j].item, reqs[j].parents).then((res) => { allResults.push(res); }));
+        tasks.push(runOne(i, j, reqs[j].item, reqs[j].parents).then((res) => { delete res.nextRequest; allResults.push(res); }));
       }
       if (stopped) break;
     }
@@ -150,17 +160,28 @@ export async function runBatch({ entry, folderId = null, iterations = 1, rows = 
     completedIterations = stopped ? allResults.filter((r, idx, a2) => a2.findIndex((x) => x.iteration === r.iteration) === idx).length : total;
     allResults.sort((a2, b2) => a2.iteration - b2.iteration);
   } else {
+    // setNextRequest can jump anywhere in the run; cap the steps so a loop can't run forever.
+    const maxSteps = Math.max(1000, reqs.length * 100);
     for (let i = 0; i < total; i++) {
-      const row = rows.length ? rows[i] : null;
-      void row;
       const iterationResults = [];
-      for (let j = 0; j < reqs.length; j++) {
+      let j = 0;
+      let steps = 0;
+      while (j < reqs.length) {
         if (isStopped?.()) { stopped = true; break; }
         const res = await runOne(i, j, reqs[j].item, reqs[j].parents);
         iterationResults.push(res);
+        const next = res.nextRequest;
+        delete res.nextRequest;
+        if (++steps >= maxSteps) { res.notes.push(`Stopped this iteration after ${steps} requests: setNextRequest looks like an endless loop.`); break; }
+        if (next === undefined) { j++; continue; }
+        if (next === null) break;
+        const k = reqs.findIndex((r) => r.item.name === next || itemId(r.item) === next);
+        if (k < 0) { res.notes.push(`setNextRequest("${next}"): no request with that name or id in this run, so the iteration stopped.`); break; }
+        j = k;
       }
-      if (stopped) break;
+      // A stopped iteration still reports the requests that did run.
       allResults.push(...iterationResults);
+      if (stopped) break;
       completedIterations = i + 1;
     }
   }
@@ -169,16 +190,8 @@ export async function runBatch({ entry, folderId = null, iterations = 1, rows = 
   if (saveExamples === 'failed' && examplePlan.length) {
     for (const { item, response, result } of examplePlan) {
       item.response = item.response || [];
-      item.response.push({
-        name: `Runner ${result.iteration}: ${response.status} ${response.statusText || ''}`.trim(),
-        originalRequest: clone(item.request),
-        status: response.statusText,
-        code: response.status,
-        _postman_previewlanguage: (response.contentType || '').includes('json') ? 'json' : 'text',
-        header: (response.headers || []).map((x) => ({ key: x.key, value: x.value })),
-        cookie: [],
-        body: (response.bodyText || '').slice(0, 100_000),
-      });
+      item.response.push(exampleFromResponse(item.request, { ...response, bodyText: (response.bodyText || '').slice(0, 100_000) },
+        `Runner ${result.iteration}: ${response.status} ${response.statusText || ''}`.trim()));
       result.exampleSaved = true;
     }
     await S.collectionChanged(entry, { push: true }).catch(() => { entry.dirty = true; S.saveWorkspace(); });

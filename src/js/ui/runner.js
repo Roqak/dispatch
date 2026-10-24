@@ -7,6 +7,7 @@ import { state, emit } from '../store.js';
 import { bridge } from '../bridge.js';
 import * as C from '../ctx.js';
 import * as R from '../runner.js';
+import { loadVault } from '../vault.js';
 
 export function renderRunner(root, t) {
   const entry = S.collectionEntry(t.ref?.col);
@@ -173,6 +174,7 @@ export function renderRunner(root, t) {
     s0.run = { done: 0, total, summary: null };
     emit('tabs', 'main');
     try {
+      await loadVault().catch(() => {});
       const summary = await R.runBatch({
         entry, folderId: t.ref?.item ?? null,
         iterations: s0.iterations, rows, delayMs: s0.delayMs,

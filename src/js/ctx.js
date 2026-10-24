@@ -3,13 +3,17 @@
 import * as S from './store.js';
 import { state, emit } from './store.js';
 import { bridge } from './bridge.js';
-import { clone, uuid, findItem, findParentList, newRequestItem, newFolder, isFolder, itemId, duplicateItem, urlObject, effectiveAuth } from './model.js';
+import { clone, uuid, findItem, findParentList, newRequestItem, newFolder, isFolder, itemId, duplicateItem, urlObject, effectiveAuth, findExample, duplicateExample as copyExample } from './model.js';
 import { Scope, Resolver } from './vars.js';
 import { execute, buildOutgoing } from './send.js';
 import * as WS from './ws.js';
+import { generate } from './codegen.js';
+import { loadVault } from './vault.js';
+import { loadVendor } from './vendor.js';
+import { sseParser, isEventStream } from './sse.js';
 import { toast, confirmDialog, errText } from './ui/dom.js';
 
-export const libs = () => ({ chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._ });
+export const libs = () => ({ chai: globalThis.chai, CryptoJS: globalThis.CryptoJS, lodash: globalThis._, loadExtra: () => loadVendor('pmlibs') });
 
 // ---------- tabs ----------
 
@@ -80,10 +84,47 @@ export function openGlobals() {
   addTab({ kind: 'globals', ref: {}, draft: { name: 'Globals', values: clone(state.ws.globals.values || []) } });
 }
 
+export function openGrpc() {
+  addTab({ kind: 'grpc', ref: {}, sub: 'message', draft: { name: 'New gRPC request', target: '', method: '', message: '{\n}', metadata: [], protos: [] } });
+}
+
+export function openLoadTest(src) {
+  const existing = findTab((x) => x.kind === 'load' && x.ref?.src === src.id);
+  if (existing) return focusTab(existing.id);
+  addTab({ kind: 'load', ref: { src: src.id, col: src.ref?.col || null, item: src.ref?.item || null }, draft: { name: `Load: ${src.draft.name}`, vus: 10, mode: 'duration', durationS: 30, requests: 1000, rampUpS: 0, rps: 0 } });
+}
+
+export function openChain(entry) {
+  const existing = findTab((x) => x.kind === 'chain' && x.ref?.col === entry.uid);
+  if (existing) return focusTab(existing.id);
+  addTab({ kind: 'chain', ref: { col: entry.uid, item: null }, draft: { name: `Chain: ${entry.name}` } });
+}
+
+export function openMock(entry) {
+  const existing = findTab((x) => x.kind === 'mock' && x.ref?.col === entry.uid);
+  if (existing) return focusTab(existing.id);
+  addTab({ kind: 'mock', ref: { col: entry.uid }, draft: { name: `Mock: ${entry.name}` } });
+}
+
+export function openVault() {
+  const existing = findTab((x) => x.kind === 'vault');
+  if (existing) return focusTab(existing.id);
+  addTab({ kind: 'vault', ref: {}, draft: { name: 'Vault' } });
+}
+
 export function openRunner(entry, folderId = null) {
   const existing = findTab((t) => t.kind === 'runner' && t.ref?.col === entry.uid && (t.ref?.item ?? null) === (folderId ?? null));
   if (existing) return focusTab(existing.id);
   addTab({ kind: 'runner', ref: { col: entry.uid, item: folderId }, draft: { name: 'Runner' } });
+}
+
+export async function openExample(entry, itemIdArg, exId) {
+  await S.ensureCollection(entry);
+  const found = findExample(findItem(entry.data, itemIdArg)?.item, exId);
+  if (!found) return;
+  const existing = findTab((t) => t.kind === 'example' && t.ref?.col === entry.uid && t.ref.item === itemIdArg && t.ref.ex === exId);
+  if (existing) return focusTab(existing.id);
+  addTab({ kind: 'example', sub: 'headers', respTab: 'body', ref: { col: entry.uid, item: itemIdArg, ex: exId }, draft: clone(found.example) });
 }
 
 // ---------- WebSocket connections ----------
@@ -133,6 +174,7 @@ export async function closeTab(id, { force = false } = {}) {
 
 export function tabTitle(t) {
   if (t.kind === 'globals') return 'Globals';
+  if (t.kind === 'vault') return 'Vault';
   return t.draft?.name || 'Untitled';
 }
 
@@ -155,6 +197,10 @@ export function refreshCleanTabs() {
     } else if (t.kind === 'container') {
       const e = S.collectionEntry(t.ref.col);
       if (e?.data) t.draft = containerDraft(e, t.ref.item) || t.draft;
+    } else if (t.kind === 'example') {
+      const e = S.collectionEntry(t.ref.col);
+      const f = e?.data && findExample(findItem(e.data, t.ref.item)?.item, t.ref.ex);
+      if (f) t.draft = clone(f.example);
     }
   }
 }
@@ -195,8 +241,35 @@ export async function run(t) {
   t.running = true;
   t.response = null;
   emit('response', 'tabs');
+  await loadVault().catch((e) => toast(`Vault secrets couldn't be read: ${errText(e)}`, { error: true }));
   const { collection, parents } = contextFor(t);
   const started = Date.now();
+  // Streaming responses (SSE, NDJSON) show up live while they arrive.
+  const streamId = uuid();
+  t.stream = { id: streamId, head: null, text: '', events: [], parser: null, kind: null };
+  let painted = false;
+  const repaint = () => { if (painted) return; painted = true; requestAnimationFrame(() => { painted = false; emit('response'); }); };
+  const onEvent = (ev) => {
+    const s = t.stream;
+    if (!s || s.id !== streamId) return;
+    if (ev.type === 'head') {
+      s.head = ev;
+      s.kind = isEventStream(ev.contentType) ? 'sse' : 'lines';
+      s.parser = s.kind === 'sse' ? sseParser() : null;
+      s.lineBuf = '';
+    } else if (ev.type === 'chunk') {
+      s.text += ev.text;
+      const at = Date.now() - started;
+      if (s.kind === 'sse') s.events.push(...s.parser.push(ev.text).map((e) => ({ ...e, at })));
+      else {
+        const lines = (s.lineBuf + ev.text).split(/\r?\n/);
+        s.lineBuf = lines.pop();
+        for (const l of lines) if (l.trim()) s.events.push({ event: 'line', data: l, at });
+      }
+      if (s.events.length > 5000) s.events.splice(0, s.events.length - 5000);
+    }
+    repaint();
+  };
   let result;
   try {
     result = await execute({
@@ -206,12 +279,18 @@ export async function run(t) {
       scopes: scopesFor(t),
       settings: state.settings,
       send: (req) => bridge.send(req),
+      sendMain: (req) => (bridge.sendStream ? bridge.sendStream(req, streamId, onEvent) : bridge.send(req)),
       libs: libs(),
     });
   } catch (e) {
     result = { error: errText(e), logs: [], tests: [], notes: [], scriptErrors: [] };
   }
   t.running = false;
+  if (t.stream?.parser) t.stream.events.push(...t.stream.parser.end().map((e) => ({ ...e, at: Date.now() - started })));
+  if (!t.stream?.head) t.stream = null;
+  if (result.response?.streamed && t.respTab === 'body') t.respTab = 'events';
+  if (result.response?.stopped) result.notes.push('You stopped the stream; tests ran on what had arrived.');
+  if (result.nextRequest !== undefined) result.notes.push('setNextRequest only takes effect in the collection runner.');
   t.response = { ...result, at: started };
   if (result.response && t.respTab === 'tests' && !result.tests.length) t.respTab = 'body';
   if (result.tests?.length && result.tests.some((x) => x.passed === false) && t.respTab === 'body') { /* keep on body */ }
@@ -231,19 +310,44 @@ export async function run(t) {
   emit('response', 'tabs', 'env-values');
 }
 
-export function curlFor(t) {
+/** The request as it would go out right now: variables resolved, auth applied. */
+export function outgoingFor(t, { vault = false } = {}) {
   const { collection, parents } = contextFor(t);
   const req = t.draft.request;
   const { auth } = effectiveAuth(req, parents, collection);
-  const o = buildOutgoing(req, auth, resolverFor(t), state.settings);
-  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-  const parts = [`curl --location --request ${o.method} ${q(o.url)}`];
-  for (const hd of o.headers) if (hd.key !== 'Accept' || hd.value !== '*/*') parts.push(`--header ${q(`${hd.key}: ${hd.value}`)}`);
-  if (o.body.mode === 'raw') parts.push(`--data-raw ${q(o.body.content)}`);
-  if (o.body.mode === 'urlencoded') for (const f of o.body.fields) parts.push(`--data-urlencode ${q(`${f.key}=${f.value}`)}`);
-  if (o.body.mode === 'formdata') for (const f of o.body.fields) parts.push(`--form ${q(f.kind === 'file' ? `${f.key}=@"${f.src}"` : `${f.key}=${f.value}`)}`);
-  if (o.body.mode === 'file') parts.push(`--data-binary ${q(`@${o.body.path}`)}`);
-  return parts.join(' \\\n  ');
+  // Snippets are copied and shared, so vault secrets stay as {{vault:…}} placeholders.
+  const r = resolverFor(t);
+  return buildOutgoing(req, auth, vault ? r : r.withoutVault(), state.settings);
+}
+
+export const curlFor = (t) => generate('curl', outgoingFor(t));
+
+/**
+ * Send the tab's request with another environment, without side effects:
+ * scripts write to copies of the current values, and history isn't touched.
+ */
+export async function runAgainst(t, env) {
+  if (env) await S.ensureEnvironment(env).catch(() => {});
+  await loadVault().catch(() => {});
+  const live = scopesFor(t);
+  const copy = (sc) => new Scope(sc.values, { ...sc.overlay }, null, sc.name);
+  const scopes = {
+    local: new Scope([], {}),
+    environment: new Scope(env?.data?.values || [], { ...(env?.overlay || {}) }, null, env?.name),
+    collection: copy(live.collection),
+    globals: copy(live.globals),
+  };
+  const { collection, parents } = contextFor(t);
+  try {
+    return await execute({ item: clone(t.draft), parents, collection, scopes, settings: state.settings, send: (req) => bridge.send(req), libs: libs() });
+  } catch (e) {
+    return { error: errText(e), logs: [], tests: [], notes: [], scriptErrors: [] };
+  }
+}
+
+/** Stop a streaming response; the send then finishes with what arrived. */
+export function stopStream(t) {
+  if (t.stream?.id) bridge.stopRequest?.(t.stream.id).catch(() => {});
 }
 
 // ---------- saving ----------
@@ -255,6 +359,7 @@ export async function saveTab(t) {
     if (t.kind === 'container') return await saveContainer(t);
     if (t.kind === 'env') return await saveEnv(t);
     if (t.kind === 'globals') return await saveGlobals(t);
+    if (t.kind === 'example') return await saveExampleTab(t);
   } catch (e) {
     if (e instanceof S.ConflictError) return handleConflict(e);
     toast(errText(e), { error: true });
@@ -276,6 +381,8 @@ async function saveRequest(t) {
   await S.ensureCollection(entry);
   const loc = findParentList(entry.data, t.ref.item);
   const saved = clone(t.draft);
+  // Examples are edited in their own tabs; keep the collection's copy, not this tab's snapshot.
+  if (loc) saved.response = loc.list[loc.index].response || [];
   if (loc) loc.list[loc.index] = saved;
   else (entry.data.item = entry.data.item || []).push(saved);
   t.dirty = false;
@@ -299,6 +406,20 @@ export async function saveRequestInto(t, entry, folderId, name) {
   t.dirty = false;
   expandPath(entry, folderId);
   emit('tabs', 'main');
+  S.saveTabs();
+  toastSync(entry, S.collectionChanged(entry));
+  return true;
+}
+
+async function saveExampleTab(t) {
+  const entry = S.collectionEntry(t.ref.col);
+  if (!entry) throw new Error('That collection is no longer in this workspace.');
+  await S.ensureCollection(entry);
+  const found = findExample(findItem(entry.data, t.ref.item)?.item, t.ref.ex);
+  if (!found) throw new Error('This example no longer exists.');
+  found.list[found.index] = clone(t.draft);
+  t.dirty = false;
+  emit('tabs');
   S.saveTabs();
   toastSync(entry, S.collectionChanged(entry));
   return true;
@@ -492,6 +613,53 @@ export async function removeItem(entry, id) {
   const ids = new Set([id]);
   if (isFolder(it)) (function collect(items) { for (const x of items) { ids.add(x.id); if (x.item) collect(x.item); } })(it.item);
   for (const t of wsTabs()) if (t.ref?.col === entry.uid && ids.has(t.ref.item)) await closeTab(t.id, { force: true });
+  await S.collectionChanged(entry, { push: false });
+  pushIfAuto(entry);
+}
+
+// ---------- examples ----------
+
+/** Add an example straight to the saved request, leaving a tab's unsaved edits alone. */
+export async function addExample(entry, itemIdArg, example, { open = true } = {}) {
+  await S.ensureCollection(entry);
+  const f = findItem(entry.data, itemIdArg);
+  if (!f) throw new Error('This request is no longer in the collection.');
+  (f.item.response = f.item.response || []).push(example);
+  toggleExpanded(`ex:${itemIdArg}`, true);
+  toastSync(entry, S.collectionChanged(entry));
+  if (open) await openExample(entry, itemIdArg, example.id);
+}
+
+export async function renameExample(entry, itemIdArg, exId, name) {
+  await S.ensureCollection(entry);
+  const found = findExample(findItem(entry.data, itemIdArg)?.item, exId);
+  if (!found) return;
+  found.example.name = name;
+  for (const t of wsTabs()) if (t.kind === 'example' && t.ref.col === entry.uid && t.ref.ex === exId) t.draft.name = name;
+  await S.collectionChanged(entry, { push: false });
+  emit('tabs', 'main');
+  pushIfAuto(entry);
+}
+
+export async function duplicateExample(entry, itemIdArg, exId) {
+  await S.ensureCollection(entry);
+  const found = findExample(findItem(entry.data, itemIdArg)?.item, exId);
+  if (!found) return;
+  const copy = copyExample(found.example);
+  found.list.splice(found.index + 1, 0, copy);
+  await S.collectionChanged(entry, { push: false });
+  await openExample(entry, itemIdArg, copy.id);
+  pushIfAuto(entry);
+}
+
+export async function removeExample(entry, itemIdArg, exId) {
+  await S.ensureCollection(entry);
+  const found = findExample(findItem(entry.data, itemIdArg)?.item, exId);
+  if (!found) return;
+  const ok = await confirmDialog({ title: `Delete "${found.example.name}"?`, message: 'This example will be deleted here and in Postman.', confirm: 'Delete', danger: true });
+  if (!ok) return;
+  found.list.splice(found.index, 1);
+  for (const t of wsTabs()) if (t.kind === 'example' && t.ref.col === entry.uid && t.ref.ex === exId) await closeTab(t.id, { force: true });
   await S.collectionChanged(entry, { push: false });
   pushIfAuto(entry);
 }

@@ -250,14 +250,21 @@ export async function fetchOAuthToken(auth, resolver, send, settings) {
 
 /**
  * Run a request end to end.
- * opts: { item, parents, collection, scopes, settings, send, libs }
+ * opts: { item, parents, collection, scopes, settings, send, libs, run, sendMain }
+ * sendMain (optional) sends the request itself, e.g. streaming; scripts' pm.sendRequest always uses send.
+ * run (runner only): { iteration (0-based), iterationCount }.
+ * The result's nextRequest/visualizer are set when a script asked for them.
  */
-export async function execute({ item, parents, collection, scopes, settings, send, libs }) {
+export async function execute({ item, parents, collection, scopes, settings, send, libs, run, sendMain = send }) {
   const req = clone(item.request);
   if (item.protocolProfileBehavior) req._protocolProfileBehavior = item.protocolProfileBehavior;
   const resolver = new Resolver(scopes);
-  const info = { requestName: item.name, requestId: item.id };
-  const out = { logs: [], tests: [], response: null, error: null, outgoing: null, notes: [], scriptErrors: [] };
+  const info = { requestName: item.name, requestId: item.id, iteration: run?.iteration ?? 0, iterationCount: run?.iterationCount ?? 1 };
+  const out = { logs: [], tests: [], response: null, error: null, outgoing: null, notes: [], scriptErrors: [], nextRequest: undefined, visualizer: undefined };
+  const take = (r) => {
+    if (r.nextRequest !== undefined) out.nextRequest = r.nextRequest;
+    if (r.visualizer !== undefined) out.visualizer = r.visualizer;
+  };
   const chain = [collection, ...parents, item].filter(Boolean);
 
   const ctxBase = { resolver, scopes, libs, info, send };
@@ -267,6 +274,7 @@ export async function execute({ item, parents, collection, scopes, settings, sen
     if (!code) continue;
     const r = await runScript(code, { ...ctxBase, phase: 'prerequest', request: req });
     out.logs.push(...r.logs);
+    take(r);
     if (r.error) {
       out.scriptErrors.push({ phase: 'Pre-request script', where: target === collection ? 'collection' : target.name, message: r.error });
       out.error = `Pre-request script error in ${target === collection ? 'the collection' : `"${target.name}"`}: ${r.error}`;
@@ -289,7 +297,7 @@ export async function execute({ item, parents, collection, scopes, settings, sen
   out.outgoing = outgoing;
 
   try {
-    out.response = await send(outgoing);
+    out.response = await sendMain(outgoing);
   } catch (e) {
     out.error = String(e?.message || e);
     return out;
@@ -303,7 +311,7 @@ export async function execute({ item, parents, collection, scopes, settings, sen
     if (header) {
       const retry = { ...outgoing, headers: [...outgoing.headers.filter((h) => (h.key || '').toLowerCase() !== 'authorization'), { key: 'Authorization', value: header }] };
       try {
-        out.response = await send(retry);
+        out.response = await sendMain(retry);
         out.notes.push('Sent again with the Digest challenge response from the server.');
       } catch (e) {
         out.error = String(e?.message || e);
@@ -317,6 +325,7 @@ export async function execute({ item, parents, collection, scopes, settings, sen
     if (!code) continue;
     const r = await runScript(code, { ...ctxBase, phase: 'test', request: req, response: out.response });
     out.logs.push(...r.logs);
+    take(r);
     out.tests.push(...r.tests);
     if (r.error) out.scriptErrors.push({ phase: 'Test script', where: target === collection ? 'collection' : target.name, message: r.error });
   }

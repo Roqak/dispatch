@@ -20,7 +20,48 @@ export const region = {
 export const bridge = isDesktop
   ? {
       send: (request) => invoke('send_request', { request }),
+      sendStream: (request, id, onEvent) => {
+        const ch = new tauri.Channel();
+        ch.onmessage = onEvent;
+        return invoke('send_request_stream', { request, id, onEvent: ch });
+      },
+      stopRequest: (id) => invoke('stop_request', { id }),
+      loadtestRun: (id, request, config, onProgress) => {
+        const ch = new tauri.Channel();
+        ch.onmessage = onProgress;
+        return invoke('loadtest_run', { id, request, config, onProgress: ch });
+      },
+      loadtestStop: (id) => invoke('loadtest_stop', { id }),
+      grpcDescribe: (source) => invoke('grpc_describe', { source }),
+      grpcCall: (source, method, message, onMessage) => {
+        const ch = new tauri.Channel();
+        ch.onmessage = onMessage;
+        return invoke('grpc_call', { source, method, message, onMessage: ch });
+      },
+      pickProtoFiles: () => invoke('pick_proto_files'),
+      aiSetKey: (key) => invoke('ai_set_key', { key }),
+      aiHasKey: () => invoke('ai_has_key'),
+      aiDeleteKey: () => invoke('ai_delete_key'),
+      aiAsk: (request, id, onEvent) => {
+        const ch = new tauri.Channel();
+        ch.onmessage = onEvent;
+        return invoke('ai_ask', { request, id, onEvent: ch });
+      },
       clearCookies: () => invoke('clear_cookies'),
+      listCookies: () => invoke('list_cookies'),
+      setCookie: (cookie) => invoke('set_cookie', { cookie }),
+      deleteCookie: (domain, path, name) => invoke('delete_cookie', { domain, path, name }),
+      mockStart: (id, port, routes, onLog) => {
+        const ch = new tauri.Channel();
+        ch.onmessage = onLog;
+        return invoke('mock_start', { id, port, routes, onLog: ch });
+      },
+      mockUpdate: (id, routes) => invoke('mock_update', { id, routes }),
+      mockStop: (id) => invoke('mock_stop', { id }),
+      pickFolder: () => invoke('pick_folder'),
+      folderRead: (dir) => invoke('folder_read', { dir }),
+      folderWrite: (dir, files, prune) => invoke('folder_write', { dir, files, prune }),
+      folderForget: (dir) => invoke('folder_forget', { dir }),
       postman: (method, path, body) => invoke('postman_api', { method, path, body: body ?? null, profileId: callCtx.profileId ?? '', region: callCtx.region }),
       setApiKey: (key, profileId, region) => invoke('set_api_key', { key, profileId, region }),
       hasApiKey: (profileId) => invoke('has_api_key', { profileId }),

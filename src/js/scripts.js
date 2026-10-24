@@ -228,17 +228,38 @@ function formatArg(a) {
   try { return JSON.stringify(a, null, 2); } catch { return String(a); }
 }
 
+// Postman's sandbox libraries beyond the always-loaded ones; loaded on first use.
+export const PM_LIBS = ['cheerio', 'moment', 'xml2js', 'tv4', 'ajv', 'csv-parse/lib/sync', 'buffer', 'events', 'util', 'assert', 'path', 'querystring', 'url', 'string_decoder', 'punycode', 'timers', 'stream'];
+
+export function needsExtraLibs(code) {
+  for (const m of code.matchAll(/require\(\s*['"`](?:node:)?([^'"`]+)['"`]\s*\)/g)) if (PM_LIBS.includes(m[1])) return true;
+  return /\b(cheerio|tv4|xml2Json)\b/.test(code);
+}
+
 /**
  * Run one script.
  * ctx: { phase: 'prerequest'|'test', request, response?, resolver, scopes, send, libs, info }
- * Returns { tests, logs, error, skipRequest }.
+ * Returns { tests, logs, error, skipRequest, nextRequest, visualizer }.
+ * nextRequest stays undefined unless a script calls setNextRequest (null = stop the run);
+ * visualizer stays undefined unless a script calls pm.visualizer (null = cleared).
  */
 export async function runScript(code, ctx) {
-  const result = { tests: [], logs: [], error: null, skipRequest: false };
+  const result = { tests: [], logs: [], error: null, skipRequest: false, nextRequest: undefined, visualizer: undefined };
   if (!code || !code.trim()) return result;
-  const { libs = {}, resolver, scopes } = ctx;
+  if (!globalThis.__pmLibs && needsExtraLibs(code)) {
+    try { await ctx.libs?.loadExtra?.(); } catch (e) { result.logs.push({ level: 'warn', message: `Couldn't load the script libraries: ${e?.message || e}`, ts: Date.now() }); }
+  }
+  const { libs = {}, scopes } = ctx;
+  // Scripts never see vault secrets: {{vault:…}} stays a placeholder here.
+  const resolver = ctx.resolver?.withoutVault?.() ?? ctx.resolver;
   const pending = [];
   const track = (p) => { pending.push(p.catch(() => {})); return p; };
+  // Errors thrown later (in callbacks and timers) are script errors too, as in Postman.
+  const fail = (where, e) => {
+    const msg = `${where}: ${e?.message || e}`;
+    if (!result.error) result.error = msg;
+    result.logs.push({ level: 'error', message: msg, ts: Date.now() });
+  };
 
   const log = (level) => (...args) => result.logs.push({ level, message: args.map(formatArg).join(' '), ts: Date.now() });
   const consoleApi = { log: log('log'), info: log('info'), warn: log('warn'), error: log('error'), debug: log('log'), clear() {} };
@@ -253,6 +274,19 @@ export async function runScript(code, ctx) {
     replaceIn: (s) => resolver.replace(s),
     get name() { return scope.name; },
   });
+
+  // Data-file row for this runner iteration (empty outside the runner).
+  const dataScope = scopes.data;
+  const iterationData = {
+    get: (k) => dataScope?.get(k),
+    has: (k) => !!dataScope?.has(k),
+    unset: (k) => dataScope?.unset(k),
+    toObject: () => (dataScope ? dataScope.toObject() : {}),
+    toJSON: () => (dataScope ? dataScope.toObject() : {}),
+    replaceIn: (s) => resolver.replace(s),
+  };
+  // A request name or id to run next; null ends the run. Only the runner acts on it.
+  const setNextRequest = (next) => { result.nextRequest = next == null ? null : String(next); };
 
   const reqWrapper = wrapRequest(ctx.request, resolver);
   const resWrapper = ctx.response ? wrapResponse(ctx.response, libs) : undefined;
@@ -273,29 +307,36 @@ export async function runScript(code, ctx) {
   test.skip = (name) => result.tests.push({ name: String(name), passed: null, skipped: true, error: null });
 
   const sendRequest = (input, cb) => {
+    const call = (err, res) => { try { cb?.(err, res); } catch (e) { fail('Error in the pm.sendRequest callback', e); } };
     const p = ctx.send(toOutgoing(input, resolver)).then(
-      (r) => { const w = wrapResponse(r, libs); cb?.(null, w); return w; },
-      (e) => { const err = new Error(String(e?.message || e)); cb?.(err, null); throw err; },
+      (r) => { const w = wrapResponse(r, libs); call(null, w); return w; },
+      (e) => { const err = new Error(String(e?.message || e)); call(err, null); throw err; },
     );
-    return track(p);
+    track(p);
+    // A callback-style call never awaits the promise; don't let a failed send surface as an unhandled rejection.
+    if (cb) p.catch(() => {});
+    return p;
   };
 
   const pm = {
-    info: { eventName: ctx.phase, requestName: ctx.info?.requestName, requestId: ctx.info?.requestId, iteration: 0, iterationCount: 1 },
+    info: { eventName: ctx.phase, requestName: ctx.info?.requestName, requestId: ctx.info?.requestId, iteration: ctx.info?.iteration ?? 0, iterationCount: ctx.info?.iterationCount ?? 1 },
     environment: scopeApi(scopes.environment),
     collectionVariables: scopeApi(scopes.collection),
     globals: scopeApi(scopes.globals),
     variables: { ...scopeApi(scopes.local), get: (k) => resolver.lookup(k)?.value, has: (k) => !!resolver.lookup(k), toObject: () => ({ ...scopes.globals.toObject(), ...scopes.collection.toObject(), ...scopes.environment.toObject(), ...scopes.local.toObject() }) },
-    iterationData: { get: () => undefined, has: () => false, toObject: () => ({}) },
+    iterationData,
     request: reqWrapper,
     response: resWrapper,
     test,
     expect: libs.chai.expect,
     sendRequest,
-    execution: { skipRequest: () => { result.skipRequest = true; }, setNextRequest() {}, location: [] },
+    execution: { skipRequest: () => { result.skipRequest = true; }, setNextRequest, location: [] },
     cookies: resWrapper ? resWrapper.cookies : { get: () => undefined, has: () => false, toObject: () => ({}) },
     require: (n) => requireLib(n),
-    visualizer: { set() {}, clear() {} },
+    visualizer: {
+      set: (template, data, options) => { result.visualizer = { template: String(template ?? ''), data: data === undefined ? {} : JSON.parse(JSON.stringify(data)), options: options || {} }; },
+      clear: () => { result.visualizer = null; },
+    },
   };
 
   const legacyTests = {};
@@ -307,7 +348,7 @@ export async function runScript(code, ctx) {
     setGlobalVariable: (k, v) => scopes.globals.set(k, v),
     getGlobalVariable: (k) => scopes.globals.get(k),
     clearGlobalVariable: (k) => scopes.globals.unset(k),
-    setNextRequest() {},
+    setNextRequest,
     getResponseHeader: (k) => resWrapper?.headers.get(k),
   };
 
@@ -321,12 +362,19 @@ export async function runScript(code, ctx) {
       btoa: (s) => btoa(s),
     };
     if (name in map && map[name]) return map[name];
-    throw new Error(`Dispatch doesn't bundle "${name}" yet. Available: crypto-js, lodash, chai, uuid, atob, btoa.`);
+    const extra = globalThis.__pmLibs;
+    const key = name.replace(/^node:/, '');
+    if (extra && key in extra) return extra[key];
+    if (PM_LIBS.includes(key)) throw new Error(`"${name}" couldn't be loaded.`);
+    throw new Error(`Dispatch doesn't bundle "${name}". Available: ${['crypto-js', 'lodash', 'chai', 'uuid', 'atob', 'btoa', ...PM_LIBS].join(', ')}.`);
   }
 
-  const timers = (fn, ms, ...a) => { let t; track(new Promise((res) => { t = setTimeout(() => { try { fn(...a); } finally { res(); } }, ms); })); return t; };
+  const timers = (fn, ms, ...a) => { let t; track(new Promise((res) => { t = setTimeout(() => { try { fn(...a); } catch (e) { fail('Error in a setTimeout callback', e); } finally { res(); } }, ms); })); return t; };
 
-  const names = ['pm', 'postman', 'console', 'require', 'CryptoJS', '_', 'chai', 'tests', 'responseBody', 'responseCode', 'responseTime', 'responseHeaders', 'environment', 'globals', 'setTimeout', 'atob', 'btoa'];
+  const extra = globalThis.__pmLibs || {};
+  // Postman's legacy globals for scripts written before require().
+  const xml2Json = (xml) => { let out = null; extra.xml2js?.parseString(xml, { explicitArray: false, async: false }, (e, r) => { if (e) throw e; out = r; }); return out; };
+  const names = ['pm', 'postman', 'console', 'require', 'CryptoJS', '_', 'chai', 'tests', 'responseBody', 'responseCode', 'responseTime', 'responseHeaders', 'environment', 'globals', 'setTimeout', 'atob', 'btoa', 'data', 'iteration', 'cheerio', 'tv4', 'xml2Json', 'Buffer'];
   const values = [
     pm, postman, consoleApi, requireLib, libs.CryptoJS, libs.lodash, libs.chai, legacyTests,
     resWrapper ? resWrapper.text() : undefined,
@@ -335,6 +383,8 @@ export async function runScript(code, ctx) {
     resWrapper ? resWrapper.headers.toObject() : undefined,
     scopes.environment.toObject(), scopes.globals.toObject(),
     timers, (s) => atob(s), (s) => btoa(s),
+    iterationData.toObject(), pm.info.iteration,
+    extra.cheerio, extra.tv4, xml2Json, extra.buffer?.Buffer ?? globalThis.Buffer,
   ];
 
   try {

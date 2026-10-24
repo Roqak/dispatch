@@ -1,6 +1,9 @@
 import { h, icon, modal, toast, errText, logoSvg, relTime, confirmDialog, promptDialog, showMenu } from './dom.js';
 import { varInput, subtabs } from './components.js';
 import { authEditor, scriptsEditor } from './request.js';
+import { docsEditor, descriptionText } from './docs.js';
+import { openCookieManager } from './cookies.js';
+import { aiKeyControl } from './assistview.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
 import { state, emit } from '../store.js';
@@ -37,11 +40,9 @@ export function renderContainer(root, t) {
   function renderPane() {
     pane.replaceChildren();
     if (t.sub === 'overview') {
-      const ta = h('textarea', { class: 'textarea', rows: 10, placeholder: 'Describe what this is for (Markdown is fine). Synced with Postman.', style: { fontFamily: 'var(--font)', fontSize: '13px', maxWidth: '760px' } });
-      ta.value = typeof d.description === 'string' ? d.description : d.description?.content || '';
-      ta.addEventListener('input', () => { d.description = ta.value; dirty(); });
+      const docs = docsEditor({ get: () => descriptionText(d.description), set: (v) => { d.description = v; }, onChange: dirty, state: t, placeholder: `Describe what this ${isCol ? 'collection' : 'folder'} is for. Markdown works, and it syncs with Postman.` });
       const count = (() => { let r = 0, f = 0; const src = isCol ? collection.item : C.contextFor(t).item?.item || []; (function walk(items) { for (const x of items) { if (isFolder(x)) { f++; walk(x.item); } else r++; } })(src); return `${r} request${r === 1 ? '' : 's'}${f ? `, ${f} folder${f === 1 ? '' : 's'}` : ''}`; })();
-      pane.append(h('div', { class: 'pane-title' }, 'Description'), ta, h('p', { class: 'hint' }, count, isCol && entry.updatedAt ? ` · last changed in Postman ${relTime(Date.parse(entry.updatedAt))}` : ''));
+      pane.append(h('div', { class: 'pane-title' }, 'Description'), docs, h('p', { class: 'hint' }, count, isCol && entry.updatedAt ? ` · last changed in Postman ${relTime(Date.parse(entry.updatedAt))}` : ''));
     } else if (t.sub === 'auth') {
       pane.append(h('p', { class: 'hint', style: { marginTop: 0 } }, `Requests in this ${isCol ? 'collection' : 'folder'} set to "Inherit from parent" use this.`),
         authEditor({ target: d, kind: isCol ? 'collection' : 'folder', parents: isCol ? [] : parents, collection: isCol ? null : collection, resolver, onChange: dirty, onTypeChange: () => { renderTabs(); renderPane(); }, tab: t }));
@@ -346,7 +347,10 @@ export function openSettings() {
           h('label', null, 'Timeout (ms)'), num('timeoutMs', 1000, 600000),
           h('label', null, 'Follow redirects'), h('div', null, toggle('followRedirects')),
           h('label', null, 'Verify SSL certificates'), h('div', null, toggle('verifySsl')),
-          h('label', null, 'Cookies'), h('div', null, h('button', { class: 'btn sm', onclick: async () => { await bridge.clearCookies(); toast('Cookies cleared'); } }, 'Clear all cookies')))),
+          h('label', null, 'Cookies'), h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => openCookieManager() }, 'Manage cookies…'), h('button', { class: 'btn ghost sm', onclick: async () => { await bridge.clearCookies(); toast('Cookies cleared'); } }, 'Clear all cookies')))),
+      h('div', { class: 'settings-section' }, h('h3', null, 'AI assistant'),
+        h('div', { class: 'form-grid' }, h('label', null, 'Anthropic API key'), aiKeyControl()),
+        h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Writes tests from a response, explains responses and errors, and drafts requests from a description, using Claude (claude-opus-5) with your own key. Nothing is sent until you ask.')),
       h('div', { class: 'settings-section' }, h('h3', null, 'Certificates & proxy'),
         transportBox,
         h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Client certificates match by host (exact or *.wildcard). Passwords are stored like API keys, never in plain files. The proxy applies to every request.')),

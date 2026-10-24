@@ -4,7 +4,7 @@ import { h, icon } from './dom.js';
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-const SCOPE_LABEL = { local: 'Local', environment: 'Environment', collection: 'Collection', globals: 'Global', dynamic: 'Dynamic' };
+const SCOPE_LABEL = { local: 'Local', data: 'Data', environment: 'Environment', collection: 'Collection', globals: 'Global', vault: 'Vault', dynamic: 'Dynamic' };
 
 /** Hover text: the resolved string, then where each variable's value comes from. */
 function varTitle(v, r) {
@@ -13,6 +13,7 @@ function varTitle(v, r) {
     const hit = r.lookup(n);
     if (!hit) return `${n}: not defined in any scope`;
     if (hit.scope === 'dynamic') return `${n}: new random value on each send (Dynamic)`;
+    if (hit.scope === 'vault') return `${n}: ••••••, from your vault (filled in only when sent)`;
     return `${n}: ${hit.secret ? '••••••' : hit.value} (${SCOPE_LABEL[hit.scope]})`;
   });
   return [r.replace(v, 0, { mask: true }), '', ...lines].join('\n');
@@ -85,7 +86,7 @@ export function varInput({ value = '', placeholder = '', oninput, onkeydown, res
   const renderMenu = () => menu.replaceChildren(...items.map((n, i) => h('button', {
     class: i === active && 'on',
     onmousedown: (e) => { e.preventDefault(); choose(n); },
-  }, h('span', { class: 'vs-name' }, n.name), h('span', { class: 'vs-val' }, n.scope === 'dynamic' ? '' : n.secret ? '••••••' : String(n.value ?? '')), h('span', { class: 'k' }, SCOPE_LABEL[n.scope]))));
+  }, h('span', { class: 'vs-name' }, n.name), h('span', { class: 'vs-val' }, n.scope === 'dynamic' ? '' : n.secret ? '••••••' : String(n.value ?? '')), h('span', { class: 'k' }, SCOPE_LABEL[n.scope] || n.scope))));
   // Registered before the caller's handler so Enter picks a suggestion instead of sending.
   input.addEventListener('keydown', (e) => {
     if (!menu) return;

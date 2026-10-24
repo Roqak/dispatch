@@ -200,13 +200,33 @@ export class Scope {
   }
 }
 
+// Vault secrets, written as {{vault:name}}. They live in the OS keychain, never
+// sync, and are only filled in when a request is actually sent: scripts, code
+// snippets and copied cURL see the placeholder.
+const vault = new Map();
+export const VAULT_PREFIX = 'vault:';
+export function setVault(entries) {
+  vault.clear();
+  for (const [k, v] of Object.entries(entries || {})) vault.set(k, String(v));
+}
+export const vaultNames = () => [...vault.keys()].sort();
+
 export class Resolver {
   /** scopes: { local, environment, collection, globals } as Scope instances */
-  constructor(scopes) {
+  constructor(scopes, { vault: useVault = true } = {}) {
     this.scopes = scopes;
     this.order = ['local', 'data', 'environment', 'collection', 'globals'];
+    this.useVault = useVault;
+  }
+  /** The same scopes, with {{vault:…}} left unresolved (for scripts and snippets). */
+  withoutVault() {
+    return this.useVault ? new Resolver(this.scopes, { vault: false }) : this;
   }
   lookup(name) {
+    if (name.startsWith(VAULT_PREFIX)) {
+      const key = name.slice(VAULT_PREFIX.length).trim();
+      return this.useVault && vault.has(key) ? { value: vault.get(key), scope: 'vault', secret: true } : null;
+    }
     for (const s of this.order) {
       const sc = this.scopes[s];
       if (sc?.has(name)) return { value: sc.get(name), scope: s, secret: !!sc.isSecret?.(name) };
@@ -222,7 +242,8 @@ export class Resolver {
       if (!sc) continue;
       for (const k of sc.keys()) if (k && !seen.has(k) && sc.has(k)) seen.set(k, { name: k, scope: s, value: sc.get(k), secret: !!sc.isSecret?.(k) });
     }
-    return [...seen.values(), ...Object.keys(DYNAMIC).map((k) => ({ name: k, scope: 'dynamic' }))];
+    const vaulted = this.useVault ? vaultNames().map((k) => ({ name: `${VAULT_PREFIX}${k}`, scope: 'vault', value: '', secret: true })) : [];
+    return [...seen.values(), ...vaulted, ...Object.keys(DYNAMIC).map((k) => ({ name: k, scope: 'dynamic' }))];
   }
   /**
    * Replace {{vars}} in a string. Unknown variables are left as-is (like Postman).
