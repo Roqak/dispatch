@@ -51,9 +51,16 @@ nav .links a:hover{color:var(--ink);background:#ffffff0d}
 #hero .glow{position:absolute;inset:-20% -10% auto;z-index:-2;pointer-events:none;background:
   radial-gradient(60% 45% at 78% 18%, #7fd6a41f, transparent 70%),
   radial-gradient(40% 30% at 15% 5%, #f5b9420f, transparent 70%)}
-.hero-in{padding:132px 0 40px}
-.hero-in .eyebrow{margin-bottom:18px;animation:rise .7s .1s backwards}
-h1{font-size:clamp(40px,6.4vw,76px);max-width:13.5ch;animation:rise .7s .18s backwards}
+.hero-in{padding:120px 0 40px;display:grid;grid-template-columns:1.08fr .92fr;gap:56px;align-items:center}
+.hero-copy{min-width:0}
+@media (max-width:960px){.hero-in{grid-template-columns:1fr;gap:40px}.bench-card{max-width:560px}}
+.hero-copy .eyebrow{margin-bottom:18px;animation:rise .7s .1s backwards}
+.bench-card{display:grid;gap:20px;border-radius:32px;padding:30px 30px 26px;background:
+    radial-gradient(130% 150% at 12% 0%, #7fd6a41f, transparent 55%),
+    linear-gradient(160deg,#182018,#0e100f 75%);border:1px solid #2e3b33;animation:rise .9s .45s backwards}
+.bench-card .eb{display:inline-flex;align-items:center;gap:8px;font-weight:800;font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--acc)}
+.bench-card .eb i{width:7px;height:7px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 4px #7fd6a433}
+h1{font-size:clamp(40px,5.4vw,70px);max-width:13.5ch;animation:rise .7s .18s backwards}
 h1 em{font-style:normal;color:var(--acc)}
 h1 .amber{color:var(--amber)}
 .lede{margin-top:18px;font-size:clamp(15.5px,2vw,18px);color:var(--ink2);max-width:52ch;animation:rise .7s .26s backwards}
@@ -115,19 +122,17 @@ section{padding:88px 0}
 .workrow .arw{color:var(--mut);font-size:20px}
 @media (max-width:760px){.workrow .ds{font-size:13.5px}}
 
-/* ---------- benchmark ---------- */
-#bench .bench{display:grid;gap:22px}
-#bench .brow{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:center}
-#bench .brow .bl{font-weight:700;font-size:14px;color:var(--ink2)}
-#bench .brow .bl small{display:block;font-family:var(--fd);font-weight:600;font-size:22px;color:var(--ink);margin-top:2px}
-#bench .brow.hi .bl small{color:var(--acc)}
-#bench .bar{position:relative;height:46px;border-radius:12px;background:#ffffff08;border:1px solid var(--line);overflow:hidden}
-#bench .bar i{position:absolute;inset:2px auto 2px 2px;width:0;border-radius:9px;transition:width 1.4s cubic-bezier(.2,.7,.25,1)}
-#bench .bar.disp i{background:linear-gradient(90deg,var(--acc),#2f8a5e)}
-#bench .bar.post i{background:#3a443e}
-#bench .note{margin-top:18px;font-size:12.5px;color:var(--mut)}
-#bench .vs{font-family:var(--fd);color:var(--amber);font-size:11px;letter-spacing:.08em}
-@media (max-width:640px){#bench .brow{grid-template-columns:1fr;gap:8px;margin-bottom:10px}}
+/* ---------- benchmark (hero card) ---------- */
+.bench-card .brow{display:grid;gap:10px}
+.bench-card .brow .bl{font-weight:700;font-size:13.5px;color:var(--ink2)}
+.bench-card .brow .bl small{float:right;font-family:var(--fd);font-weight:600;font-size:19px;color:var(--ink);margin-top:-2px}
+.bench-card .brow.hi .bl small{color:var(--acc)}
+.bench-card .bar{position:relative;height:40px;border-radius:12px;background:#ffffff08;border:1px solid var(--line);overflow:hidden}
+.bench-card .bar i{position:absolute;inset:2px auto 2px 2px;width:0;border-radius:9px;transition:width 1.4s cubic-bezier(.2,.7,.25,1)}
+.bench-card .bar.disp i{background:linear-gradient(90deg,var(--acc),#2f8a5e)}
+.bench-card .bar.post i{background:#3a443e}
+.bench-card .note{font-size:11.5px;color:var(--mut);line-height:1.5}
+.bench-card .vs{font-family:var(--fd);color:var(--amber);font-size:10px;letter-spacing:.07em;margin-left:6px}
 
 /* ---------- numbers band ---------- */
 #numbers{background:var(--bg2);border-block:1px solid var(--line)}
@@ -207,20 +212,34 @@ footer .legal b{color:var(--mut)}
 <section id="hero" style="padding:0">
   <div class="glow"></div>
   <div class="wrap hero-in">
-    <span class="eyebrow"><i></i>API client · native · no account required</span>
-    <h1>Everything you use Postman for. <em>None</em> of the <span class="amber">weight</span>.</h1>
-    <p class="lede">Dispatch is a native API client that reads and writes your workspaces, collections and environments through <b>Postman's official API</b> — so your team keeps collaborating in Postman while you work in something much lighter. There's also a built-in local profile, so it runs entirely on this device <b>with no account at all</b>.</p>
-    <div class="hero-cta">
-      <a class="cta main" id="dlHero" href="https://github.com/Roqak/dispatch/releases">Download Dispatch</a>
-      <a class="cta ghost" href="https://github.com/Roqak/dispatch">View the source</a>
+    <div class="hero-copy">
+      <span class="eyebrow"><i></i>API client · native · no account required</span>
+      <h1>Everything you use Postman for. <em>None</em> of the <span class="amber">weight</span>.</h1>
+      <p class="lede">Dispatch is a native API client that reads and writes your workspaces, collections and environments through <b>Postman's official API</b> — so your team keeps collaborating in Postman while you work in something much lighter. There's also a built-in local profile, so it runs entirely on this device <b>with no account at all</b>.</p>
+      <div class="hero-cta">
+        <a class="cta main" id="dlHero" href="https://github.com/Roqak/dispatch/releases">Download Dispatch</a>
+        <a class="cta ghost" href="https://github.com/Roqak/dispatch">View the source</a>
+      </div>
+      <div class="dl-switch" id="dlSwitch" hidden></div>
+      <div class="hero-badge">
+        <span>macOS 13+ · Apple Silicon &amp; Intel</span>
+        <span>Windows 10/11</span>
+        <span>Linux x86_64</span>
+        <span>REST · WebSocket · gRPC · GraphQL</span>
+      </div>
     </div>
-    <div class="dl-switch" id="dlSwitch" hidden></div>
-    <div class="hero-badge">
-      <span>macOS 13+ · Apple Silicon &amp; Intel</span>
-      <span>Windows 10/11</span>
-      <span>Linux x86_64</span>
-      <span>REST · WebSocket · gRPC · GraphQL</span>
-    </div>
+    <aside class="bench-card" id="benchRows" data-disp-mb="8.0" data-post-mb="206.9">
+      <span class="eb"><i></i>Benchmark · download size, macOS Apple Silicon</span>
+      <div class="brow hi">
+        <div class="bl">Dispatch <span class="vs">26× lighter</span><small><span class="num">0</span> MB</small></div>
+        <div class="bar disp"><i></i></div>
+      </div>
+      <div class="brow">
+        <div class="bl">Postman<small><span class="num">0</span> MB</small></div>
+        <div class="bar post"><i></i></div>
+      </div>
+      <p class="note">Measured 24 Oct 2026 — Dispatch v0.6.1 (8,021,760 bytes) vs Postman's macOS arm64 download (206,943,275 bytes, dl.pstmn.io). Platform sizes differ; the scale holds.</p>
+    </aside>
   </div>
   <div class="wrap hero-shot">
     <div class="frame"><img src="img/light.png" alt="Dispatch request editor with a response and the collection runner"></div>
@@ -274,27 +293,6 @@ footer .legal b{color:var(--mut)}
         <p>Schema introspection off the request's own headers, autocomplete as you type, inline errors for unknown fields — plus an explorer for the whole schema.</p>
       </div>
     </div>
-  </div>
-</section>
-
-<section id="bench">
-  <div class="wrap">
-    <div class="sec-head rv">
-      <span class="eyebrow"><i></i>Benchmark</span>
-      <h2>The whole client weighs less than Postman's <em>splash screen</em>.</h2>
-      <p>Download sizes for the macOS (Apple Silicon) builds. No fudging, no "feels faster" — just bytes.</p>
-    </div>
-    <div class="bench rv" id="benchRows" data-disp-mb="8.0" data-post-mb="206.9">
-      <div class="brow hi">
-        <div class="bl">Dispatch <span class="vs">26× lighter</span><small><span class="num">0</span> MB download</small></div>
-        <div class="bar disp"><i></i></div>
-      </div>
-      <div class="brow">
-        <div class="bl">Postman<small><span class="num">0</span> MB download</small></div>
-        <div class="bar post"><i></i></div>
-      </div>
-    </div>
-    <p class="note rv">Measured 24 Oct 2026 — Dispatch v0.6.1 release asset (8,021,760 bytes) vs Postman's macOS arm64 download (206,943,275 bytes, dl.pstmn.io, the number your browser is offered). Your download may differ by platform; the scale holds.</p>
   </div>
 </section>
 
@@ -428,7 +426,9 @@ const bench=document.getElementById('benchRows');
 if(bench){
   const mb=v=>+v;
   const rows=[...bench.querySelectorAll('.bar')];
+  let done=false;
   const animate=()=>{
+    if(done) return; done=true;
     const post=mb(bench.dataset.postMb), disp=mb(bench.dataset.dispMb);
     const bars=[...bench.querySelectorAll('.bar i')];
     const nums=[...bench.querySelectorAll('.num')];
