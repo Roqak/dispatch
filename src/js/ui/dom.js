@@ -91,7 +91,7 @@ export function icon(name, cls) {
   return svg;
 }
 
-export const logoSvg = () => h('div', { class: 'logo', html: `<svg viewBox="0 0 64 64" width="46" height="46"><rect x="4" y="4" width="56" height="56" rx="13" fill="#181c26"/><path d="M17 33 L46 20 L35 47 L31 37 Z" fill="#ff8a3d"/><path d="M31 37 L46 20 L29 35 Z" fill="#d6621e"/><rect x="11" y="38" width="9" height="2" rx="1" fill="#ff8a3d" opacity=".7"/><rect x="14" y="42" width="6" height="2" rx="1" fill="#ff8a3d" opacity=".7"/></svg>` });
+export const logoSvg = () => h('div', { class: 'logo', html: `<svg viewBox="0 0 64 64" width="46" height="46"><rect x="4" y="4" width="56" height="56" rx="13" fill="#181c26"/><path d="M17 33 L46 20 L35 47 L31 37 Z" fill="#7fd6a4"/><path d="M31 37 L46 20 L29 35 Z" fill="#2f8a5e"/><rect x="11" y="38" width="9" height="2" rx="1" fill="#7fd6a4" opacity=".7"/><rect x="14" y="42" width="6" height="2" rx="1" fill="#7fd6a4" opacity=".7"/></svg>` });
 
 // ---------- menus ----------
 let openMenu = null;
