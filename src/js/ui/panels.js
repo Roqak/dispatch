@@ -255,6 +255,13 @@ export function addProfileDialog(then) {
   modal({ title: 'Add Postman profile', body, wide: true });
 }
 
+/** Current version and a "Check for updates" button. */
+function updatesRow() {
+  const ver = h('span', { class: 'mono' }, '…');
+  import('../updater.js').then(async (u) => { ver.textContent = (await u.currentVersion()) || 'browser preview'; });
+  return h('div', { class: 'row' }, ver, h('button', { class: 'btn sm', onclick: async () => (await import('../updater.js')).checkNow() }, 'Check for updates'));
+}
+
 export function openSettings() {
   const s = state.settings;
   const body = h('div');
@@ -342,6 +349,8 @@ export function openSettings() {
             h('option', { value: 'auto', selected: s.syncMode === 'auto' }, 'Sync to Postman right away'),
             h('option', { value: 'manual', selected: s.syncMode === 'manual' }, 'Keep local until I push')),
           h('span'), h('span', { class: 'hint', style: { margin: 0 } }, 'Each sync uses 2–3 Postman API calls. If your plan\'s monthly limit is tight, choose "Keep local until I push" and push from a collection\'s ⋯ menu.'))),
+      h('div', { class: 'settings-section' }, h('h3', null, 'Updates'),
+        h('div', { class: 'form-grid' }, h('label', null, 'Version'), updatesRow())),
       h('div', { class: 'settings-section' }, h('h3', null, 'Requests'),
         h('div', { class: 'form-grid' },
           h('label', null, 'Timeout (ms)'), num('timeoutMs', 1000, 600000),

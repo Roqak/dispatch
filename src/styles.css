@@ -601,6 +601,8 @@ button.meta-btn:hover, button.meta-btn.menu-open { background: var(--hover); }
 .grpc-msg { padding-top: 6px; }
 .grpc-n { font-size: 11px; padding: 8px 16px 0; }
 .grpc-meta { padding: 8px 16px 16px; font-size: 12px; } .grpc-meta summary { color: var(--text-3); cursor: default; }
+.update-banner { position: fixed; top: 46px; left: 50%; transform: translateX(-50%); z-index: 95; display: flex; align-items: center; gap: 10px; padding: 8px 10px 8px 14px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: var(--shadow); font-size: 13px; max-width: calc(100vw - 32px); }
+.update-status { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .code-snippet { max-height: 55vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 0; }
 .modal-head { display: flex; align-items: center; padding: 14px 16px 10px; }
 .modal-head h2 { font-size: 15px; margin: 0; flex: 1; }
