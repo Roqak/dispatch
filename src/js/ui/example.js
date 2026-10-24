@@ -111,14 +111,14 @@ export function renderExampleResponse(root, t) {
     body.append(h('div', { class: 'pane' }, kvSection({ title: 'Response headers', rows: d.header, kind: 'headers', descriptions: false, onChange: dirty })));
   } else {
     const lang = d._postman_previewlanguage || 'text';
-    const ta = codeArea({ value: d.body, placeholder: 'Response body', oninput: (v) => { d.body = v; dirty(); } });
-    const langSel = h('select', { class: 'select', style: { height: '26px', fontSize: '12px' }, onchange: (e) => { d._postman_previewlanguage = e.target.value; dirty(); } },
+    const ta = codeArea({ value: d.body, lang, placeholder: 'Response body', oninput: (v) => { d.body = v; dirty(); } });
+    const langSel = h('select', { class: 'select', style: { height: '26px', fontSize: '12px' }, onchange: (e) => { d._postman_previewlanguage = e.target.value; ta.setLang(e.target.value); dirty(); } },
       LANGS.map(([id, label]) => h('option', { value: id, selected: id === lang }, label)));
     const beautify = h('button', { class: 'btn ghost sm', onclick: () => {
       try { const out = beautifyJson(ta.value); ta.value = out; d.body = out; dirty(); } catch (e) { toast(`That isn't valid JSON yet: ${e.message}`, { error: true }); }
     } }, 'Beautify');
     body.append(h('div', { class: 'resp-tools' }, langSel, h('span', { class: 'grow' }), beautify),
-      h('div', { class: 'pane', style: { display: 'flex', flexDirection: 'column' } }, h('div', { class: 'code-wrap' }, ta)));
+      h('div', { class: 'pane', style: { display: 'flex', flexDirection: 'column' } }, h('div', { class: 'code-wrap' }, ta.el)));
   }
   root.replaceChildren(head, body);
 }

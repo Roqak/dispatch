@@ -3,7 +3,6 @@
 import { bridge, region, callCtx } from './bridge.js';
 import * as cloud from './sync.js';
 import { clone, newCollection, forExport, ensureIds, uuid } from './model.js';
-import { convertImport } from './importers.js';
 import { loadVendor } from './vendor.js';
 
 export const LOCAL_WS = { id: 'local', name: 'On this device (not synced)', type: 'local' };
@@ -504,6 +503,7 @@ export async function importFromFile() {
 export async function importText(text, fileName = '') {
   const isJson = /^\s*[{[]/.test(String(text).replace(/^﻿/, ''));
   const yaml = isJson ? undefined : await loadVendor('yaml').catch(() => undefined);
+  const { convertImport } = await import('./importers.js');
   const parsed = convertImport(text, { fileName, yaml });
   if (parsed.kind === 'environment') {
     const env = await addImportedEnvironment(parsed.data.name, parsed.data.values || []);

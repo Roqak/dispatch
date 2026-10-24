@@ -1,11 +1,8 @@
-import { h, icon, showMenu, toast, errText, fmtBytes, fmtMs, methodClass, modal, popover, closeMenu } from './dom.js';
+import { h, icon, showMenu, toast, errText, fmtBytes, fmtMs, methodClass, modal, popover, closeMenu, lazyEl } from './dom.js';
 import { LANGUAGES, generate } from '../codegen.js';
 import { docsEditor, descriptionText } from './docs.js';
-import { openCookieManager } from './cookies.js';
-import { writeTests, explainResponse } from './assistview.js';
 import { loadVendor } from '../vendor.js';
 import { varInput, kvSection, codeArea, highlightJson, subtabs } from './components.js';
-import { diffTable, openCompare } from './compare.js';
 import * as WS from '../ws.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
@@ -13,12 +10,14 @@ import { state } from '../store.js';
 import { bridge } from '../bridge.js';
 import { METHODS, urlObject, setRawUrl, rawWithQuery, getScript, setScript, AUTH_TYPES, authParam, setAuthParam, effectiveAuth, parseUrl, clone, exampleFromResponse } from '../model.js';
 import { fetchOAuthToken } from '../send.js';
-import { parseCurl } from '../curl.js';
 import { formatJsonc, jsonProblem } from '../jsonc.js';
-import { jsonPath } from '../jsonpath.js';
 import { parseSse, parseNdjson, isEventStream, isLineStream } from '../sse.js';
-import { graphqlEditor } from './gqleditor.js';
-import { INTROSPECTION_QUERY, buildSchema } from '../graphql.js';
+
+// Less-used features load their code on first use.
+const openCookieManager = (opts) => import('./cookies.js').then((m) => m.openCookieManager(opts));
+const writeTests = (t) => import('./assistview.js').then((m) => m.writeTests(t));
+const explainResponse = (t) => import('./assistview.js').then((m) => m.explainResponse(t));
+const openCompare = (t) => import('./compare.js').then((m) => m.openCompare(t));
 
 // ---------- request editor ----------
 
@@ -68,13 +67,13 @@ export function renderRequestEditor(root, t) {
     const text = e.clipboardData?.getData('text') || '';
     if (!/^\s*curl\s/i.test(text)) return;
     e.preventDefault();
-    try {
+    import('../curl.js').then(({ parseCurl }) => {
       const parsed = parseCurl(text);
       Object.assign(req, parsed);
       dirty();
       toast('Imported the cURL command');
       C.emitAll();
-    } catch (err) { toast(errText(err), { error: true }); }
+    }).catch((err) => toast(errText(err), { error: true }));
   });
   const wsMode = WS.isWs(req.url.raw || '');
   const wsBtnLabel = wsMode ? (t.wsConn?.status === 'connected' ? 'Disconnect' : t.wsConn?.status === 'connecting' ? 'Cancel' : 'Connect') : t.running ? 'Sending…' : 'Send';
@@ -126,6 +125,7 @@ export function renderRequestEditor(root, t) {
           // Introspect the same endpoint, with the request's own headers and auth.
           const o = C.outgoingFor(t);
           const headers = o.headers.filter((x) => x.key.toLowerCase() !== 'content-type').concat({ key: 'Content-Type', value: 'application/json' });
+          const { INTROSPECTION_QUERY, buildSchema } = await import('../graphql.js');
           const res = await bridge.send({ ...o, method: 'POST', headers, body: { mode: 'raw', content: JSON.stringify({ query: INTROSPECTION_QUERY, operationName: 'IntrospectionQuery' }) } });
           let json;
           try { json = JSON.parse(res.bodyText || ''); } catch { throw new Error(`The server answered ${res.status} without JSON. Check the URL and auth.`); }
@@ -333,16 +333,16 @@ export function bodyEditor(req, resolver, dirty, onModeChange, opts = {}) {
     const parts = [radios];
     if (mode === 'raw') {
       const curLang = body.options?.raw?.language || lang;
-      const langSel = h('select', { class: 'select', style: { height: '26px', fontSize: '12px' }, onchange: (e) => { body.options = { ...(body.options || {}), raw: { ...(body.options?.raw || {}), language: e.target.value } }; dirty(); } },
+      const langSel = h('select', { class: 'select', style: { height: '26px', fontSize: '12px' }, onchange: (e) => { body.options = { ...(body.options || {}), raw: { ...(body.options?.raw || {}), language: e.target.value } }; ta.setLang(e.target.value); dirty(); } },
         [['json', 'JSON'], ['text', 'Text'], ['javascript', 'JavaScript'], ['html', 'HTML'], ['xml', 'XML']].map(([id, l]) => h('option', { value: id, selected: id === curLang }, l)));
-      const ta = codeArea({ value: body.raw || '', placeholder: curLang === 'json' ? '{\n  "key": "value"\n}' : '', oninput: (v) => { body.raw = v; dirty(); } });
+      const ta = codeArea({ value: body.raw || '', lang: curLang, placeholder: curLang === 'json' ? '{\n  "key": "value"\n}' : '', oninput: (v) => { body.raw = v; dirty(); } });
       const beautify = h('button', { class: 'btn ghost sm', onclick: () => {
         try {
           const out = beautifyJson(ta.value);
           ta.value = out; body.raw = out; dirty();
         } catch (e) { toast(`That isn't valid JSON yet: ${e.message}`, { error: true }); }
       } }, 'Beautify');
-      parts.push(h('div', { class: 'row', style: { marginBottom: '8px' } }, langSel, h('span', { class: 'grow' }), beautify), h('div', { class: 'code-wrap' }, ta));
+      parts.push(h('div', { class: 'row', style: { marginBottom: '8px' } }, langSel, h('span', { class: 'grow' }), beautify), h('div', { class: 'code-wrap' }, ta.el));
     } else if (mode === 'urlencoded') {
       parts.push(kvSection({ rows: (body.urlencoded = body.urlencoded || []), resolver, kind: 'urlencoded', onChange: dirty }));
     } else if (mode === 'formdata') {
@@ -351,7 +351,8 @@ export function bodyEditor(req, resolver, dirty, onModeChange, opts = {}) {
       const src = body.file?.src;
       parts.push(h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => { const p = await bridge.pickFilePath(); if (p) { body.file = { src: p }; dirty(); render(); } } }, icon('file'), src ? 'Change file' : 'Choose file'), h('span', { class: 'mono muted ellipsis' }, src || 'No file chosen')));
     } else if (mode === 'graphql') {
-      parts.push(graphqlEditor({ body, dirty, ...(opts.graphql || { schemaKey: () => '', loadSchema: async () => { throw new Error('Open this request in its own tab to load the schema.'); } }) }));
+      const gql = opts.graphql || { schemaKey: () => '', loadSchema: async () => { throw new Error('Open this request in its own tab to load the schema.'); } };
+      parts.push(lazyEl(() => import('./gqleditor.js').then((m) => m.graphqlEditor({ body, dirty, ...gql }))));
     } else {
       parts.push(h('p', { class: 'hint' }, 'This request has no body.'));
     }
@@ -395,7 +396,7 @@ export function scriptsEditor(target, t, dirty, onChange) {
     const seg = h('div', { class: 'seg' },
       h('button', { class: phase === 'prerequest' ? 'on' : '', onclick: () => { t.scriptTab = 'prerequest'; render(); } }, 'Pre-request', getScript(target, 'prerequest') ? ' •' : ''),
       h('button', { class: phase === 'test' ? 'on' : '', onclick: () => { t.scriptTab = 'test'; render(); } }, 'Post-response', getScript(target, 'test') ? ' •' : ''));
-    const ta = codeArea({ value: getScript(target, phase), placeholder: phase === 'prerequest' ? '// Runs before the request is sent\n// e.g. pm.environment.set("timestamp", Date.now());' : '// Runs after the response arrives\n// e.g. pm.test("Status is 200", () => pm.response.to.have.status(200));', oninput: (v) => { setScript(target, phase, v); dirty(); onChange?.(); } });
+    const ta = codeArea({ value: getScript(target, phase), lang: 'javascript', placeholder: phase === 'prerequest' ? '// Runs before the request is sent\n// e.g. pm.environment.set("timestamp", Date.now());' : '// Runs after the response arrives\n// e.g. pm.test("Status is 200", () => pm.response.to.have.status(200));', oninput: (v) => { setScript(target, phase, v); dirty(); onChange?.(); } });
     const snip = h('button', { class: 'btn ghost sm', onclick: (e) => showMenu(e, SNIPPETS[phase].map(([label, code]) => ({ label, onClick: () => {
       const cur = ta.value;
       ta.value = cur ? `${cur.replace(/\s*$/, '')}\n\n${code}\n` : `${code}\n`;
@@ -403,7 +404,7 @@ export function scriptsEditor(target, t, dirty, onChange) {
     } }))) }, 'Snippets');
     wrap.replaceChildren(
       h('div', { class: 'row', style: { marginBottom: '8px' } }, seg, h('span', { class: 'grow' }), snip),
-      h('div', { class: 'code-wrap' }, ta),
+      h('div', { class: 'code-wrap' }, ta.el),
       h('p', { class: 'hint', style: { marginBottom: 0 } }, 'Uses Postman\'s pm API. Built in: ', h('span', { class: 'mono' }, 'CryptoJS'), ', ', h('span', { class: 'mono' }, 'require("lodash")'), ', ', h('span', { class: 'mono' }, 'chai'), ', ', h('span', { class: 'mono' }, 'uuid'), ', ', h('span', { class: 'mono' }, 'atob/btoa'), '. Collection and folder scripts run first.'),
     );
   };
@@ -676,7 +677,7 @@ function diffView(root, t, res) {
 
 /** Renders the actual diff rows (current on the left, `against` on the right). */
 function diffRows(t, content, side, againstText, ignoreArrayOrder) {
-  content.append(...diffTable(t.response?.response?.bodyText ?? '', againstText, { ignoreArrayOrder }));
+  content.append(lazyEl(() => import('./compare.js').then((m) => m.diffTable(t.response?.response?.bodyText ?? '', againstText, { ignoreArrayOrder }))));
 }
 
 function consoleView(r) {
@@ -749,12 +750,11 @@ function bodyView(res, t) {
         if (!q) { msg.textContent = ''; paintBody(); findBar?.refresh(); return; }
         const parsed = safeParse(text);
         if (parsed === undefined) { msg.textContent = 'Body isn\'t valid JSON'; msg.classList.add('err'); return; }
-        try {
+        import('../jsonpath.js').then(({ jsonPath }) => {
           const hits = jsonPath(parsed, q);
           msg.textContent = `${hits.length} match${hits.length === 1 ? '' : 'es'}`;
           showJson(JSON.stringify(hits.length === 1 ? hits[0] : hits, null, 2) ?? 'undefined');
-        } catch (e) { msg.textContent = e.message; msg.classList.add('err'); }
-        findBar?.refresh();
+        }).catch((e) => { msg.textContent = e.message; msg.classList.add('err'); }).finally(() => findBar?.refresh());
       };
       let timer;
       const input = h('input', { class: 'input mono', value: t.jsonFilter, placeholder: '$.data[*].id   ·   $..name   ·   $.items[?(@.price > 10)]', spellcheck: 'false', oninput: (e) => { t.jsonFilter = e.target.value; clearTimeout(timer); timer = setTimeout(apply, 150); }, onkeydown: (e) => { if (e.key === 'Escape') { t.jsonFilter = null; rerender(); } } });

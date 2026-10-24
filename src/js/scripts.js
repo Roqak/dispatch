@@ -236,6 +236,31 @@ export function needsExtraLibs(code) {
   return /\b(cheerio|tv4|xml2Json)\b/.test(code);
 }
 
+// Postman's old sandbox shipped Sugar.js, and many shared scripts still call its
+// Number methods, e.g. (Math.random() * 100).round(). Added once, non-enumerable.
+function installSugarShims() {
+  const P = Number.prototype;
+  if (Object.hasOwn(P, 'round')) return;
+  const step = (fn) => function (precision = 0) { const m = 10 ** precision; return fn(this * m) / m; };
+  const methods = {
+    round: step(Math.round),
+    ceil: step(Math.ceil),
+    floor: step(Math.floor),
+    abs() { return Math.abs(this); },
+    pow(n = 1) { return this ** n; },
+    isEven() { return this % 2 === 0; },
+    isOdd() { return Math.abs(this % 2) === 1; },
+    isInteger() { return Number.isInteger(+this); },
+    isMultipleOf(n) { return this % n === 0; },
+    times(fn) { const out = []; for (let i = 0; i < this; i++) out.push(fn?.(i)); return out; },
+    pad(place = 0, sign = false, base = 10) { const s = Math.abs(this).toString(base).padStart(place, '0'); return (this < 0 ? '-' : sign ? '+' : '') + s; },
+    toNumber() { return +this; },
+  };
+  for (const [name, value] of Object.entries(methods)) {
+    if (!(name in P)) Object.defineProperty(P, name, { value, writable: true, configurable: true });
+  }
+}
+
 /**
  * Run one script.
  * ctx: { phase: 'prerequest'|'test', request, response?, resolver, scopes, send, libs, info }
@@ -246,6 +271,7 @@ export function needsExtraLibs(code) {
 export async function runScript(code, ctx) {
   const result = { tests: [], logs: [], error: null, skipRequest: false, nextRequest: undefined, visualizer: undefined };
   if (!code || !code.trim()) return result;
+  installSugarShims();
   if (!globalThis.__pmLibs && needsExtraLibs(code)) {
     try { await ctx.libs?.loadExtra?.(); } catch (e) { result.logs.push({ level: 'warn', message: `Couldn't load the script libraries: ${e?.message || e}`, ts: Date.now() }); }
   }

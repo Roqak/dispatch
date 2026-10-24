@@ -254,6 +254,16 @@ export function errText(e) {
   return s.replace(/^Error:\s*/, '');
 }
 
+/**
+ * Stand-in for UI whose code loads on first use: `load` resolves to the real
+ * node(s), which replace the placeholder. Keeps rarely used features out of startup.
+ */
+export function lazyEl(load) {
+  const el = h('div', { class: 'lazy' });
+  load().then((n) => el.replaceWith(...[].concat(n))).catch((e) => { el.textContent = errText(e); });
+  return el;
+}
+
 // ---------- misc ----------
 export function fmtBytes(n) {
   if (n < 1024) return `${n} B`;

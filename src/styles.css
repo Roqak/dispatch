@@ -371,6 +371,14 @@ button.ws-select.menu-open { background-color: var(--hover); }
 .resp-tools { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--panel); z-index: 1; }
 pre.body { margin: 0; padding: 10px 16px 20px; font: 12.5px/1.6 var(--mono); white-space: pre; tab-size: 2; user-select: text; -webkit-user-select: text; counter-reset: line; }
 pre.body.wrap { white-space: pre-wrap; word-break: break-all; }
+.code-hl { position: relative; display: flex; flex: 1; min-height: 0; background: var(--panel); border-radius: var(--radius); }
+.code-hl-pre { position: absolute; inset: 0; margin: 0; overflow: scroll; pointer-events: none; color: var(--text); background: transparent; scrollbar-color: transparent transparent; }
+/* Invisible scrollbars that still take room, so the copy can scroll as far as the textarea. */
+.code-hl-pre::-webkit-scrollbar-thumb, .code-hl-pre::-webkit-scrollbar-track, .code-hl-pre::-webkit-scrollbar-corner { background: transparent; }
+.code-hl-input { position: relative; background: transparent; color: transparent; caret-color: var(--text); }
+.code-hl-input::placeholder { color: var(--text-3); }
+.code-hl-input::selection { color: transparent; background: var(--focus); }
+.c-com { color: var(--text-3); font-style: italic; } .c-kw { color: var(--code-key); } .c-var { color: var(--var-ok); background: var(--var-ok-bg); border-radius: 3px; }
 .j-key { color: var(--code-key); } .j-str { color: var(--code-str); } .j-num { color: var(--code-num); } .j-bool { color: var(--code-bool); } .j-null { color: var(--code-null); }
 .resp-empty { height: 100%; display: grid; place-items: center; text-align: center; color: var(--text-3); padding: 20px; }
 .resp-empty svg { width: 54px; height: 54px; opacity: .35; margin-bottom: 8px; }

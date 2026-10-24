@@ -221,11 +221,28 @@ export function kvSection(opts) {
 }
 
 /** Monospace editor: Tab indents, Enter keeps indentation. */
-export function codeArea({ value = '', oninput, placeholder = '', minHeight, onkeydown }) {
+/**
+ * Plain textarea for code. With `lang` ('json' | 'javascript'), a highlighted copy
+ * is painted behind it; put `ta.el` in the page instead of `ta` itself.
+ */
+export function codeArea({ value = '', oninput, placeholder = '', minHeight, onkeydown, lang }) {
   const ta = h('textarea', { class: 'code', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', placeholder });
+  ta.el = ta;
+  let paint = () => {};
+  if (lang !== undefined) {
+    const pre = h('pre', { class: 'code code-hl-pre', 'aria-hidden': 'true' });
+    ta.classList.add('code-hl-input');
+    ta.el = h('div', { class: 'code-hl' }, pre, ta);
+    paint = () => { pre.innerHTML = `${highlightCode(ta.value, lang)}\n`; pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; };
+    ta.addEventListener('scroll', () => { pre.scrollTop = ta.scrollTop; pre.scrollLeft = ta.scrollLeft; });
+    // Callers set ta.value directly (Beautify, snippets); repaint when they do.
+    const native = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    Object.defineProperty(ta, 'value', { get() { return native.get.call(this); }, set(v) { native.set.call(this, v); paint(); } });
+    ta.setLang = (l) => { lang = l; paint(); };
+  }
   ta.value = value;
   if (minHeight) ta.style.minHeight = `${minHeight}px`;
-  ta.addEventListener('input', () => oninput?.(ta.value));
+  ta.addEventListener('input', () => { paint(); oninput?.(ta.value); });
   ta.addEventListener('keydown', (e) => {
     onkeydown?.(e);
     if (e.defaultPrevented) return;
@@ -240,6 +257,7 @@ export function codeArea({ value = '', oninput, placeholder = '', minHeight, onk
         const next = e.shiftKey ? block.replace(/^ {1,2}/gm, '') : block.replace(/^/gm, '  ');
         ta.setRangeText(next, ls, en, 'select');
       }
+      paint();
       oninput?.(ta.value);
     } else if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) {
       const { selectionStart: s, value: v } = ta;
@@ -249,11 +267,39 @@ export function codeArea({ value = '', oninput, placeholder = '', minHeight, onk
       const extra = '{[('.includes(prevChar) && prevChar ? '  ' : '';
       e.preventDefault();
       ta.setRangeText(`\n${indent}${extra}`, s, ta.selectionEnd, 'end');
+      paint();
       oninput?.(ta.value);
     }
   });
   ta.setValue = (v) => { ta.value = v; };
   return ta;
+}
+
+const JS_KEYWORDS = new Set('async await break case catch class const continue default delete do else export extends finally for function if import in instanceof let new of return static super switch this throw try typeof var void while yield'.split(' '));
+// Comments, strings, {{variables}}, numbers, words. Unterminated strings run to the line end.
+const CODE_TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?|`(?:\\[\s\S]|[^`\\])*`?)|(\{\{[^{}\n]*\}\})|\b(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b|([A-Za-z_$][\w$]*)/g;
+
+/** Editable JSON (comments allowed) or JavaScript with syntax colours, returned as HTML. */
+export function highlightCode(text, lang) {
+  if ((lang !== 'json' && lang !== 'javascript') || text.length > 200000) return esc(text);
+  let out = '';
+  let last = 0;
+  for (const m of text.matchAll(CODE_TOKEN)) {
+    const [tok, comment, str, variable, num, word] = m;
+    out += esc(text.slice(last, m.index));
+    last = m.index + tok.length;
+    if (comment) out += `<span class="c-com">${esc(tok)}</span>`;
+    else if (str) {
+      const cls = /^\s*:/.test(text.slice(last, last + 50)) ? 'j-key' : 'j-str';
+      out += `<span class="${cls}">${esc(tok).replace(/\{\{[^{}\n]*\}\}/g, (v) => `<span class="c-var">${v}</span>`)}</span>`;
+    } else if (variable) out += `<span class="c-var">${esc(tok)}</span>`;
+    else if (num) out += `<span class="j-num">${tok}</span>`;
+    else if (word === 'true' || word === 'false') out += `<span class="j-bool">${tok}</span>`;
+    else if (word === 'null' || word === 'undefined') out += `<span class="j-null">${tok}</span>`;
+    else if (lang === 'javascript' && JS_KEYWORDS.has(word)) out += `<span class="c-kw">${tok}</span>`;
+    else out += esc(tok);
+  }
+  return out + esc(text.slice(last));
 }
 
 /** Pretty JSON with syntax colours, returned as HTML. */

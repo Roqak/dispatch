@@ -57,7 +57,7 @@ export function graphqlEditor({ body, dirty, schemaKey, loadSchema }) {
   ta.addEventListener('blur', () => setTimeout(closeMenu, 120));
   ta.addEventListener('click', () => closeMenu());
 
-  const vars = codeArea({ value: g.variables || '', minHeight: 70, placeholder: '{\n  "id": "1"\n}', oninput: (v) => { g.variables = v; dirty(); } });
+  const vars = codeArea({ value: g.variables || '', lang: 'json', minHeight: 70, placeholder: '{\n  "id": "1"\n}', oninput: (v) => { g.variables = v; dirty(); } });
 
   function setStatus() {
     status.textContent = schema ? `Schema: ${[...schema.types.values()].filter((t) => !t.name.startsWith('__')).length} types` : 'No schema loaded — Load schema for autocomplete and checks';
@@ -153,7 +153,7 @@ export function graphqlEditor({ body, dirty, schemaKey, loadSchema }) {
     problems,
     explorer,
     h('div', { class: 'pane-title', style: { marginTop: '12px' } }, 'Variables (JSON)'),
-    vars);
+    vars.el);
   setStatus();
   check();
   return wrap;

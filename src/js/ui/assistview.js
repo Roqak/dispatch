@@ -80,8 +80,8 @@ export async function writeTests(t) {
     request: { system: TESTS_SYSTEM, prompt: testsPrompt(t.draft, res) },
     finish: (text, out, close) => {
       const code = extractCode(text);
-      const ta = codeArea({ value: code, minHeight: 240 });
-      out.replaceChildren(h('p', { class: 'hint', style: { marginTop: 0 } }, 'Review and edit, then add it to the post-response script. Send again to run the tests.'), h('div', { class: 'code-wrap' }, ta));
+      const ta = codeArea({ value: code, lang: 'javascript', minHeight: 240 });
+      out.replaceChildren(h('p', { class: 'hint', style: { marginTop: 0 } }, 'Review and edit, then add it to the post-response script. Send again to run the tests.'), h('div', { class: 'code-wrap' }, ta.el));
       return [
         h('button', { class: 'btn', onclick: close }, 'Discard'),
         h('button', { class: 'btn primary', onclick: () => {

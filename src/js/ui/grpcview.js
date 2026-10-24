@@ -58,12 +58,12 @@ export function renderGrpcTab(root, t) {
   const pane = h('div', { class: 'pane' });
   const renderPane = () => {
     if (t.sub === 'metadata') { pane.replaceChildren(kvSection({ title: 'Metadata', rows: d.metadata, kind: 'headers', resolver: () => C.resolverFor({ ref: null }), onChange: dirty })); return; }
-    const ta = codeArea({ value: d.message || '', minHeight: 180, placeholder: '{\n  "id": "123"\n}', oninput: (v) => { d.message = v; dirty(); } });
+    const ta = codeArea({ value: d.message || '', lang: 'json', minHeight: 180, placeholder: '{\n  "id": "123"\n}', oninput: (v) => { d.message = v; dirty(); } });
     pane.replaceChildren(
       h('div', { class: 'row', style: { marginBottom: '8px' } }, h('span', { class: 'faint', style: { fontSize: '12px' } }, 'Message (JSON)'), h('span', { class: 'grow' }),
         method ? h('button', { class: 'btn ghost sm', onclick: () => { ta.value = method.template; d.message = method.template; dirty(); } }, 'Use template') : null,
         h('button', { class: 'btn ghost sm', onclick: () => { try { const o = beautifyJson(ta.value); ta.value = o; d.message = o; dirty(); } catch (e) { toast(`That isn't valid JSON yet: ${e.message}`, { error: true }); } } }, 'Beautify')),
-      h('div', { class: 'code-wrap' }, ta));
+      h('div', { class: 'code-wrap' }, ta.el));
   };
   const tabs = h('div');
   const renderTabs = () => tabs.replaceChildren(subtabs([{ id: 'message', label: 'Message' }, { id: 'metadata', label: 'Metadata', count: d.metadata.filter((m) => m.key).length || '' }], t.sub, (id) => { t.sub = id; renderTabs(); renderPane(); }));

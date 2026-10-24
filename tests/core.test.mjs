@@ -1164,6 +1164,16 @@ test('scripts can require Postman\'s bundled libraries', async () => {
   assert.match(missing.error, /doesn't bundle "left-pad"\. Available: .*cheerio/);
 });
 
+test("scripts can use Sugar.js Number methods from Postman's old sandbox", async () => {
+  const s = scopes();
+  const r = await runScript("const min = 1, max = 9; const n = (Math.random() * (max - min) + min).round(); pm.variables.set('ok', String(Number.isInteger(n) && n >= min && n <= max)); pm.variables.set('p', String((3.14159).round(2))); pm.variables.set('pad', (7).pad(3));", { phase: 'prerequest', request: { header: [], url: parseUrl('http://x') }, resolver: new Resolver(s), scopes: s, libs });
+  assert.equal(r.error, null);
+  assert.equal(s.local.get('ok'), 'true');
+  assert.equal(s.local.get('p'), '3.14');
+  assert.equal(s.local.get('pad'), '007');
+  assert.ok(!Object.keys(Number.prototype).includes('round'), 'shims are not enumerable');
+});
+
 test('errors thrown in sendRequest callbacks and timers are script errors, not stray rejections', async () => {
   const unhandled = [];
   const onUnhandled = (e) => unhandled.push(e);
@@ -1171,8 +1181,8 @@ test('errors thrown in sendRequest callbacks and timers are script errors, not s
   try {
     const s = scopes();
     const run = (code, send = async () => ({ status: 200, headers: [], bodyText: '{}' })) => runScript(code, { phase: 'prerequest', request: { header: [], url: parseUrl('http://x') }, resolver: new Resolver(s), scopes: s, libs, send });
-    const a = await run("const min = 1, max = 9; pm.sendRequest('http://x/y', (err, res) => { const n = (Math.random() * (max - min) + min).round(); });");
-    assert.match(a.error, /^Error in the pm\.sendRequest callback: .*round/);
+    const a = await run("const min = 1, max = 9; pm.sendRequest('http://x/y', (err, res) => { const n = (Math.random() * (max - min) + min).roundTo(); });");
+    assert.match(a.error, /^Error in the pm\.sendRequest callback: .*roundTo/);
     assert.ok(a.logs.some((l) => l.level === 'error'));
     const b = await run("setTimeout(() => { undefinedThing(); }, 1);");
     assert.match(b.error, /^Error in a setTimeout callback: .*undefinedThing/);

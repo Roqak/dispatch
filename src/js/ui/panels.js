@@ -1,9 +1,7 @@
-import { h, icon, modal, toast, errText, logoSvg, relTime, confirmDialog, promptDialog, showMenu } from './dom.js';
+import { h, icon, modal, toast, errText, logoSvg, relTime, confirmDialog, promptDialog, showMenu, lazyEl } from './dom.js';
 import { varInput, subtabs } from './components.js';
 import { authEditor, scriptsEditor } from './request.js';
 import { docsEditor, descriptionText } from './docs.js';
-import { openCookieManager } from './cookies.js';
-import { aiKeyControl } from './assistview.js';
 import * as C from '../ctx.js';
 import * as S from '../store.js';
 import { state, emit } from '../store.js';
@@ -12,6 +10,8 @@ import { isFolder, itemId } from '../model.js';
 import { localOnlyKeys, persistCurrent, resetCurrent } from '../vars.js';
 import { callsRemaining } from '../sync.js';
 import { pwSlotKey } from '../transport.js';
+
+const openCookieManager = () => import('./cookies.js').then((m) => m.openCookieManager());
 
 // ---------- collection / folder settings ----------
 
@@ -349,7 +349,7 @@ export function openSettings() {
           h('label', null, 'Verify SSL certificates'), h('div', null, toggle('verifySsl')),
           h('label', null, 'Cookies'), h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => openCookieManager() }, 'Manage cookies…'), h('button', { class: 'btn ghost sm', onclick: async () => { await bridge.clearCookies(); toast('Cookies cleared'); } }, 'Clear all cookies')))),
       h('div', { class: 'settings-section' }, h('h3', null, 'AI assistant'),
-        h('div', { class: 'form-grid' }, h('label', null, 'Anthropic API key'), aiKeyControl()),
+        h('div', { class: 'form-grid' }, h('label', null, 'Anthropic API key'), lazyEl(() => import('./assistview.js').then((m) => m.aiKeyControl()))),
         h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Writes tests from a response, explains responses and errors, and drafts requests from a description, using Claude (claude-opus-5) with your own key. Nothing is sent until you ask.')),
       h('div', { class: 'settings-section' }, h('h3', null, 'Certificates & proxy'),
         transportBox,

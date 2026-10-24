@@ -2,19 +2,29 @@ import { h, icon, $, dragResize, methodClass, methodLabel, toast, errText, close
 import { renderSidebar } from './ui/sidebar.js';
 import { renderRequestEditor, renderResponse, codeDialog } from './ui/request.js';
 import { renderContainer, renderEnvTab, renderWelcome, renderEmpty, openSettings, applyTheme, envQuickLook } from './ui/panels.js';
-import { renderRunner } from './ui/runner.js';
 import { renderExampleEditor, renderExampleResponse } from './ui/example.js';
-import { openPalette } from './ui/palette.js';
-import { renderVaultTab } from './ui/vaultview.js';
-import { renderMockTab } from './ui/mockview.js';
-import { renderChainTab } from './ui/chainview.js';
-import { renderLoadTab } from './ui/loadview.js';
-import { renderGrpcTab } from './ui/grpcview.js';
 import { checkFolders } from './folderlink.js';
 import { scheduleUpdateCheck } from './updater.js';
 import * as S from './store.js';
 import { state, on } from './store.js';
 import * as C from './ctx.js';
+
+// Feature tabs and the palette load their code the first time they're opened.
+const openPalette = () => import('./ui/palette.js').then((m) => m.openPalette());
+const tabViews = {
+  grpc: () => import('./ui/grpcview.js').then((m) => m.renderGrpcTab),
+  load: () => import('./ui/loadview.js').then((m) => m.renderLoadTab),
+  chain: () => import('./ui/chainview.js').then((m) => m.renderChainTab),
+  mock: () => import('./ui/mockview.js').then((m) => m.renderMockTab),
+  vault: () => import('./ui/vaultview.js').then((m) => m.renderVaultTab),
+  runner: () => import('./ui/runner.js').then((m) => m.renderRunner),
+};
+let lazySeq = 0;
+function renderLazyTab(el, t) {
+  const seq = ++lazySeq;
+  tabViews[t.kind]().then((render) => { if (seq === lazySeq && el.isConnected && state.activeTab === t.id) render(el, t); })
+    .catch((e) => toast(errText(e), { error: true }));
+}
 
 const sidebarEl = $('#sidebar');
 const tabsEl = $('#tabs');
@@ -103,27 +113,11 @@ function renderMain() {
     renderEnvTab(el, t);
   } else if (t.kind === 'grpc') {
     workspaceEl.replaceChildren();
-    renderGrpcTab(workspaceEl, t);
-  } else if (t.kind === 'load') {
+    renderLazyTab(workspaceEl, t);
+  } else if (tabViews[t.kind]) {
     const el = h('section', { id: 'editor', style: { flex: '1' } });
     workspaceEl.replaceChildren(el);
-    renderLoadTab(el, t);
-  } else if (t.kind === 'chain') {
-    const el = h('section', { id: 'editor', style: { flex: '1' } });
-    workspaceEl.replaceChildren(el);
-    renderChainTab(el, t);
-  } else if (t.kind === 'mock') {
-    const el = h('section', { id: 'editor', style: { flex: '1' } });
-    workspaceEl.replaceChildren(el);
-    renderMockTab(el, t);
-  } else if (t.kind === 'vault') {
-    const el = h('section', { id: 'editor', style: { flex: '1' } });
-    workspaceEl.replaceChildren(el);
-    renderVaultTab(el, t);
-  } else if (t.kind === 'runner') {
-    const el = h('section', { id: 'editor', style: { flex: '1' } });
-    workspaceEl.replaceChildren(el);
-    renderRunner(el, t);
+    renderLazyTab(el, t);
   }
 }
 

@@ -5,9 +5,11 @@
 import { bridge } from './bridge.js';
 import * as S from './store.js';
 import { state, emit } from './store.js';
-import { toFiles, fromFiles, ownFiles, signature, pathsOf, pathsFromTree } from './gitfs.js';
 import { ensureIds, uuid } from './model.js';
 import { toast, errText, confirmDialog } from './ui/dom.js';
+
+// The file format code loads only once a collection is linked to a folder.
+const gitfs = () => import('./gitfs.js');
 
 const timers = new WeakMap();
 // Entries with a write queued or in flight: their folder is ours, not an outside edit.
@@ -15,12 +17,13 @@ const busy = new WeakSet();
 
 export async function writeFolder(entry) {
   if (!entry.linkedDir || !entry.data) return;
-  const files = toFiles(entry.data, { paths: entry.folderPaths || {} });
+  const G = await gitfs();
+  const files = G.toFiles(entry.data, { paths: entry.folderPaths || {} });
   busy.add(entry);
   try {
     await bridge.folderWrite(entry.linkedDir, files, true);
-    entry.folderSig = signature(files);
-    entry.folderPaths = pathsOf(files);
+    entry.folderSig = G.signature(files);
+    entry.folderPaths = G.pathsOf(files);
     if (entry.folderError) { delete entry.folderError; emit('sidebar'); }
   } catch (e) {
     entry.folderError = errText(e);
@@ -48,7 +51,7 @@ export async function linkToFolder(entry) {
   await S.ensureCollection(entry);
   const dir = await bridge.pickFolder();
   if (!dir) return false;
-  const existing = ownFiles(await bridge.folderRead(dir));
+  const existing = (await gitfs()).ownFiles(await bridge.folderRead(dir));
   if (existing.some((f) => f.path === 'collection.json')) {
     const choice = await confirmDialog({
       title: 'This folder already has a collection',
@@ -71,11 +74,12 @@ export async function linkToFolder(entry) {
 export async function openFolder() {
   const dir = await bridge.pickFolder();
   if (!dir) return null;
-  const own = ownFiles(await bridge.folderRead(dir));
+  const G = await gitfs();
+  const own = G.ownFiles(await bridge.folderRead(dir));
   const taken = (state.ws.collections || []).find((c) => c.linkedDir === dir);
   if (taken) throw new Error(`That folder is already linked to "${taken.name}".`);
-  const data = ensureIds(fromFiles(own));
-  const entry = { uid: `local-${uuid()}`, name: data.info.name, data, dirty: !!S.isCloud(), updatedAt: null, pendingCreate: S.isCloud(), localUpdatedAt: Date.now(), linkedDir: dir, folderSig: signature(own), folderPaths: pathsFromTree(data) };
+  const data = ensureIds(G.fromFiles(own));
+  const entry = { uid: `local-${uuid()}`, name: data.info.name, data, dirty: !!S.isCloud(), updatedAt: null, pendingCreate: S.isCloud(), localUpdatedAt: Date.now(), linkedDir: dir, folderSig: G.signature(own), folderPaths: G.pathsFromTree(data) };
   state.ws.collections.push(entry);
   S.saveWorkspace();
   emit('sidebar');
@@ -96,11 +100,12 @@ export function unlinkFolder(entry) {
 }
 
 async function applyFolder(entry, own) {
-  const data = ensureIds(fromFiles(own));
+  const G = await gitfs();
+  const data = ensureIds(G.fromFiles(own));
   entry.data = data;
-  entry.folderSig = signature(own);
+  entry.folderSig = G.signature(own);
   // Hand-added files get ids now; remember their names so the rewrite keeps them.
-  entry.folderPaths = pathsFromTree(data);
+  entry.folderPaths = G.pathsFromTree(data);
   await S.collectionChanged(entry); // rewrites the files in canonical form and pushes if syncing
   emit('tabs-refresh');
 }
@@ -113,12 +118,13 @@ export async function checkFolders() {
   try {
     for (const entry of state.ws.collections || []) {
       if (!entry.linkedDir || busy.has(entry)) continue;
+      const G = await gitfs();
       let own;
-      try { own = ownFiles(await bridge.folderRead(entry.linkedDir)); } catch (e) {
+      try { own = G.ownFiles(await bridge.folderRead(entry.linkedDir)); } catch (e) {
         if (entry.folderError !== errText(e)) { entry.folderError = errText(e); emit('sidebar'); }
         continue;
       }
-      if (!own.length || signature(own) === entry.folderSig) continue;
+      if (!own.length || G.signature(own) === entry.folderSig) continue;
       try {
         await applyFolder(entry, own);
         toast(`Loaded changes to "${entry.name}" from its folder`);
