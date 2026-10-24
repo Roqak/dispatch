@@ -65,6 +65,12 @@ h1 .amber{color:var(--amber)}
 .cta.ghost{border:1.5px solid var(--line);color:var(--ink);background:#ffffff08}
 .hero-badge{margin-top:36px;display:flex;gap:8px;flex-wrap:wrap;color:var(--mut);font-size:13px;font-weight:600;animation:rise .7s .42s backwards}
 .hero-badge span{border:1px solid var(--line);border-radius:999px;padding:5px 12px;background:#ffffff06}
+.dl-switch{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;font-size:13px;font-weight:600;animation:rise .7s .42s backwards}
+.dl-switch span.lbl{align-self:center;color:var(--mut)}
+.dl-switch a,.dl-switch button{border:1px solid var(--line);border-radius:999px;padding:5px 14px;color:var(--ink2);text-decoration:none;background:#ffffff06;cursor:pointer;transition:color .2s,border-color .2s}
+.dl-switch a:hover,.dl-switch button:hover{color:var(--ink);border-color:#7fd6a477}
+.dl-switch a.on,.dl-switch button.on{color:var(--acc);border-color:#7fd6a477;background:#7fd6a414}
+.dl-switch button[disabled]{opacity:.45}
 .hero-shot{padding:26px 0 0;animation:rise .9s .5s backwards}
 .frame{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--panel);box-shadow:0 40px 80px -30px #000c, 0 0 0 6px #ffffff05}
 .frame img{display:block;width:100%;height:auto}
@@ -191,9 +197,10 @@ footer .legal b{color:var(--mut)}
     <h1>Everything you use Postman for. <em>None</em> of the <span class="amber">weight</span>.</h1>
     <p class="lede">Dispatch is a native API client that reads and writes your workspaces, collections and environments through <b>Postman's official API</b> — so your team keeps collaborating in Postman while you work in something much lighter. There's also a built-in local profile, so it runs entirely on this device <b>with no account at all</b>.</p>
     <div class="hero-cta">
-      <a class="cta main" href="https://github.com/Roqak/dispatch/releases">Download Dispatch</a>
+      <a class="cta main" id="dlHero" href="https://github.com/Roqak/dispatch/releases">Download Dispatch</a>
       <a class="cta ghost" href="https://github.com/Roqak/dispatch">View the source</a>
     </div>
+    <div class="dl-switch" id="dlSwitch" hidden></div>
     <div class="hero-badge">
       <span>macOS 13+ · Apple Silicon &amp; Intel</span>
       <span>Windows 10/11</span>
@@ -349,8 +356,9 @@ footer .legal b{color:var(--mut)}
       <h2>One download. Your entire <em>API surface</em>.</h2>
       <p class="sub">Native builds for macOS 13+, Windows 10/11 and Linux (x86_64 glibc). Auto-updates are signed, checked daily, and apply in one click.</p>
       <div class="acts">
-        <a class="dl" href="https://github.com/Roqak/dispatch/releases">Get the latest release</a>
+        <a class="dl" id="dlCard" href="https://github.com/Roqak/dispatch/releases">Get the latest release</a>
         <a class="dl g" href="https://github.com/Roqak/dispatch">Browse the source</a>
+        <a class="dl g" href="https://github.com/Roqak/dispatch/releases">All builds &amp; versions</a>
       </div>
       <div class="footfacts">
         <span><b>Auto-update</b> signed, daily check</span>
@@ -377,6 +385,105 @@ const hd=document.getElementById('hd');
 addEventListener('scroll',()=>hd.classList.toggle('stuck',scrollY>8),{passive:true});
 const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12});
 document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+
+// ---- download: detect OS + pick the exact asset from the latest GitHub release ----
+(function(){
+  var REPO='Roqak/dispatch', REL='https://github.com/Roqak/dispatch/releases';
+  var hero=document.getElementById('dlHero');
+  if(!hero) return;
+  var card=document.getElementById('dlCard');
+  var chips=document.getElementById('dlSwitch');
+
+  // Targets: label -> {pattern(RegExp), order-preference within the same OS}
+  var TARGETS=[
+    {key:'mac-arm', label:'macOS — Apple Silicon', os:'mac', pat:/\.dmg$/i, want:['aarch64','universal','x64']},
+    {key:'mac-x64', label:'macOS — Intel',         os:'mac', pat:/\.dmg$/i, want:['x64','universal','aarch64']},
+    {key:'win',     label:'Windows 10/11',         os:'win', pat:/-setup\.exe$/i, want:['-setup.exe','.msi']},
+    {key:'linux',   label:'Linux (x86_64 glibc)',  os:'linux', pat:/\.AppImage$/i, want:['.AppImage','.deb','.rpm']},
+  ];
+
+  function detectOS(){
+    var ua=navigator.userAgent||'';
+    if(/iPhone|iPad/i.test(ua)) return 'ios';
+    if(/Windows/i.test(ua)) return 'win';
+    if(/Android/i.test(ua)) return 'linux';
+    if(/CrOS/.test(ua)) return 'linux';
+    if(/Mac OS/i.test(ua)) return 'mac';
+    if(/Linux|X11/i.test(ua)) return 'linux';
+    return 'unknown';
+  }
+  // Best-effort: ask Chromium for the real CPU arch on Apple Silicon Macs,
+  // where the UA still says "Intel".
+  function detectArch(){
+    try{
+      if(navigator.userAgentData && navigator.userAgentData.getHighEntropyValues)
+        return navigator.userAgentData.getHighEntropyValues(['architecture']);
+    }catch(e){}
+    return Promise.resolve(null);
+  }
+
+  detectArch().then(function(arch){
+    var os=detectOS();
+    var ua=navigator.userAgent||'';
+    var isMacArm=true;
+    if(/Intel Mac/i.test(ua)) isMacArm=false;
+    if(arch && arch.architecture) isMacArm=(arch.architecture==='arm');
+    if (arch && arch.platform === 'Windows') os = 'win';
+
+    var targets=TARGETS.filter(function(t){return t.os===os});
+    if(os==='mac') targets=isMacArm
+      ? targets.filter(function(t){return t.key==='mac-arm'})
+      : targets.filter(function(t){return t.key==='mac-x64'});
+
+    fetch('https://api.github.com/repos/'+REPO+'/releases/latest',{headers:{Accept:'application/vnd.github+json'}})
+      .then(function(r){return r.ok?r.json():null})
+      .then(function(rel){
+        if(!rel) return;
+        var usable=(rel.assets||[]).filter(function(a){return /\.(dmg|exe|msi|appimage|deb|rpm)$/i.test(a.name)});
+        var fallbackTitle='Download Dispatch'+(rel.tag_name?' '+rel.tag_name.replace(/^v/,''):'');
+
+        function assetFor(target){
+          var best=null,bestIdx=99;
+          usable.forEach(function(a){
+            if(!target.pat.test(a.name)) return;
+            for(var i=0;i<target.want.length;i++){
+              if(a.name.indexOf(target.want[i])!==-1 && i<bestIdx){best=a;bestIdx=i;break}
+            }
+          });
+          return best;
+        }
+        function pick(target){
+          var asset=assetFor(target);
+          var href=asset?asset.browser_download_url:REL;
+          hero.textContent=asset?('Download for '+target.label):fallbackTitle;
+          hero.href=href;
+          if(card){card.textContent=asset?'Download for '+target.label:'Get the latest release';card.href=href}
+        }
+        // default CTA: best match for the auto-picked target, else generic
+        if(targets.length){ pick(targets[0]); }
+
+        // alt-download chips (all platforms present in this release)
+        if(chips){
+          var rows=[]; TARGETS.forEach(function(t){
+            var a=usable.length?assetFor(t):null;
+            if(a) rows.push({label:t.label, href:a.browser_download_url, on:targets.length&&t.key===targets[0].key});
+          });
+          if(rows.length>1 || (rows.length===1&&targets.length===0)){
+            chips.hidden=false;
+            chips.innerHTML='<span class="lbl">Download for another OS:</span>';
+            rows.forEach(function(r0){
+              var a=document.createElement('a'); a.textContent=r0.label; a.href=r0.href;
+              if(r0.on) a.className='on';
+              a.setAttribute('download',''); chips.appendChild(a);
+            });
+            var all=document.createElement('a');
+            all.textContent='all versions →'; all.href=REL; chips.appendChild(all);
+          }
+        }
+      })
+      .catch(function(){ /* keep static fallback links */ });
+  });
+})();
 </script>
 </body>
 </html>
