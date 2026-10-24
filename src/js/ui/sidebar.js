@@ -9,6 +9,8 @@ import { isFolder, itemId, exampleId, newExample, urlObject, clone } from '../mo
 
 let sideTab = 'collections';
 let filter = '';
+// The sidebar is rebuilt on every state change; remember each tab's scroll so selecting an item doesn't jump to the top.
+const scrollPos = {};
 
 export function renderSidebar(root) {
   const current = state.workspaces.find((w) => w.id === state.ws?.id);
@@ -51,6 +53,8 @@ export function renderSidebar(root) {
       ? h('button', { class: 'icon-btn', title: 'Clear history', onclick: async () => { if (await confirmDialog({ title: 'Clear history?', message: 'This removes every request from your local history.', confirm: 'Clear', danger: true })) S.clearHistory(); } }, icon('trash'))
       : h('button', { class: 'icon-btn', title: 'Import (Postman, OpenAPI, Insomnia, HAR)', onclick: doImport }, icon('download')));
 
+  const prevList = root.querySelector('.side-content');
+  if (prevList && root.sideTab) scrollPos[root.sideTab] = prevList.scrollTop;
   const list = h('div', { class: 'side-content' });
   const foot = footer();
 
@@ -62,6 +66,8 @@ export function renderSidebar(root) {
     else list.replaceChildren(...historyView());
   }
   renderList();
+  list.scrollTop = scrollPos[sideTab] || 0;
+  root.sideTab = sideTab;
   root.renderList = renderList;
 }
 
