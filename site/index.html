@@ -78,6 +78,18 @@ h1 .amber{color:var(--amber)}
 .dl-switch a:hover,.dl-switch button:hover{color:var(--ink);border-color:#7fd6a477}
 .dl-switch a.on,.dl-switch button.on{color:var(--acc);border-color:#7fd6a477;background:#7fd6a414}
 .dl-switch button[disabled]{opacity:.45}
+.oneliner{margin-top:18px;max-width:560px;animation:rise .7s .42s backwards}
+.ol-tabs{display:flex;gap:4px;margin-bottom:8px;font-size:12.5px;font-weight:700}
+.ol-tabs button{padding:4px 12px;border-radius:999px;color:var(--mut);transition:color .2s,background .2s}
+.ol-tabs button:hover{color:var(--ink2)}
+.ol-tabs button.on{color:var(--acc);background:#7fd6a414}
+.ol-box{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:14px;background:#0b0d0c;padding:6px 6px 6px 16px}
+.ol-box code{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;color:var(--ink2);scrollbar-width:none}
+.ol-box code::-webkit-scrollbar{display:none}
+.ol-box code b{color:var(--acc);font-weight:500}
+.ol-box button{flex:none;height:34px;padding:0 14px;border-radius:10px;font-size:13px;font-weight:700;color:var(--ink);background:#ffffff0d;border:1px solid var(--line);transition:color .2s,border-color .2s}
+.ol-box button:hover{border-color:#7fd6a477}
+.ol-box button.ok{color:var(--acc);border-color:#7fd6a477}
 .hero-shot{padding:26px 0 0;animation:rise .9s .5s backwards}
 .frame{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;background:var(--panel);box-shadow:0 40px 80px -30px #000c, 0 0 0 6px #ffffff05}
 .frame img{display:block;width:100%;height:auto}
@@ -221,6 +233,16 @@ footer .legal b{color:var(--mut)}
         <a class="cta ghost" href="https://github.com/Roqak/dispatch">View the source</a>
       </div>
       <div class="dl-switch" id="dlSwitch" hidden></div>
+      <div class="oneliner" id="oneLiner">
+        <div class="ol-tabs" role="tablist" aria-label="Install from the terminal">
+          <button type="button" role="tab" data-os="unix" class="on" aria-selected="true">macOS / Linux</button>
+          <button type="button" role="tab" data-os="win" aria-selected="false">Windows</button>
+        </div>
+        <div class="ol-box">
+          <code id="olCmd"><b>$</b> curl -fsSL https://raw.githubusercontent.com/Roqak/dispatch/main/site/install.sh | sh</code>
+          <button type="button" id="olCopy">Copy</button>
+        </div>
+      </div>
       <div class="hero-badge">
         <span>macOS 13+ · Apple Silicon &amp; Intel</span>
         <span>Windows 10/11</span>
@@ -446,6 +468,35 @@ if(bench){
   new IntersectionObserver((es,o)=>{ if(es.some(e=>e.isIntersecting)){ animate(); o.disconnect(); } },{threshold:.3}).observe(bench);
   setTimeout(animate, 4000); // same safety net: animate even if never scrolled to
 }
+
+// ---- one-line terminal install: command follows the domain the page is served from ----
+(function(){
+  var box=document.getElementById('oneLiner');
+  if(!box) return;
+  var code=document.getElementById('olCmd'), copy=document.getElementById('olCopy');
+  var base=/^https:/.test(location.protocol)?location.origin:'https://raw.githubusercontent.com/Roqak/dispatch/main/site';
+  var CMDS={
+    unix:{prompt:'$', cmd:'curl -fsSL '+base+'/install.sh | sh'},
+    win: {prompt:'PS>', cmd:'irm '+base+'/install.ps1 | iex'}
+  };
+  var cur='unix';
+  function show(os){
+    cur=os;
+    code.innerHTML='';
+    var b=document.createElement('b'); b.textContent=CMDS[os].prompt;
+    code.appendChild(b); code.appendChild(document.createTextNode(' '+CMDS[os].cmd));
+    box.querySelectorAll('.ol-tabs button').forEach(function(t){
+      var on=t.dataset.os===os; t.classList.toggle('on',on); t.setAttribute('aria-selected',on);
+    });
+  }
+  box.querySelectorAll('.ol-tabs button').forEach(function(t){ t.addEventListener('click',function(){show(t.dataset.os)}) });
+  copy.addEventListener('click',function(){
+    var done=function(){ copy.textContent='Copied'; copy.classList.add('ok');
+      setTimeout(function(){copy.textContent='Copy'; copy.classList.remove('ok')},1600) };
+    if(navigator.clipboard) navigator.clipboard.writeText(CMDS[cur].cmd).then(done,function(){});
+  });
+  show(/Windows/i.test(navigator.userAgent||'')?'win':'unix');
+})();
 
 // ---- download: detect OS + pick the exact asset from the latest GitHub release ----
 (function(){
