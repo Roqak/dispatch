@@ -115,6 +115,20 @@ section{padding:88px 0}
 .workrow .arw{color:var(--mut);font-size:20px}
 @media (max-width:760px){.workrow .ds{font-size:13.5px}}
 
+/* ---------- benchmark ---------- */
+#bench .bench{display:grid;gap:22px}
+#bench .brow{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:center}
+#bench .brow .bl{font-weight:700;font-size:14px;color:var(--ink2)}
+#bench .brow .bl small{display:block;font-family:var(--fd);font-weight:600;font-size:22px;color:var(--ink);margin-top:2px}
+#bench .brow.hi .bl small{color:var(--acc)}
+#bench .bar{position:relative;height:46px;border-radius:12px;background:#ffffff08;border:1px solid var(--line);overflow:hidden}
+#bench .bar i{position:absolute;inset:2px auto 2px 2px;width:0;border-radius:9px;transition:width 1.4s cubic-bezier(.2,.7,.25,1)}
+#bench .bar.disp i{background:linear-gradient(90deg,var(--acc),#2f8a5e)}
+#bench .bar.post i{background:#3a443e}
+#bench .note{margin-top:18px;font-size:12.5px;color:var(--mut)}
+#bench .vs{font-family:var(--fd);color:var(--amber);font-size:11px;letter-spacing:.08em}
+@media (max-width:640px){#bench .brow{grid-template-columns:1fr;gap:8px;margin-bottom:10px}}
+
 /* ---------- numbers band ---------- */
 #numbers{background:var(--bg2);border-block:1px solid var(--line)}
 #numbers .band{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;text-align:center}
@@ -263,6 +277,27 @@ footer .legal b{color:var(--mut)}
   </div>
 </section>
 
+<section id="bench">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="eyebrow"><i></i>Benchmark</span>
+      <h2>The whole client weighs less than Postman's <em>splash screen</em>.</h2>
+      <p>Download sizes for the macOS (Apple Silicon) builds. No fudging, no "feels faster" — just bytes.</p>
+    </div>
+    <div class="bench rv" id="benchRows" data-disp-mb="8.0" data-post-mb="206.9">
+      <div class="brow hi">
+        <div class="bl">Dispatch <span class="vs">26× lighter</span><small><span class="num">0</span> MB download</small></div>
+        <div class="bar disp"><i></i></div>
+      </div>
+      <div class="brow">
+        <div class="bl">Postman<small><span class="num">0</span> MB download</small></div>
+        <div class="bar post"><i></i></div>
+      </div>
+    </div>
+    <p class="note rv">Measured 24 Oct 2026 — Dispatch v0.6.1 release asset (8,021,760 bytes) vs Postman's macOS arm64 download (206,943,275 bytes, dl.pstmn.io, the number your browser is offered). Your download may differ by platform; the scale holds.</p>
+  </div>
+</section>
+
 <section id="capability">
   <div class="wrap">
     <div class="sec-head rv">
@@ -383,8 +418,34 @@ footer .legal b{color:var(--mut)}
 document.documentElement.classList.add('js');
 const hd=document.getElementById('hd');
 addEventListener('scroll',()=>hd.classList.toggle('stuck',scrollY>8),{passive:true});
-const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12});
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12, rootMargin:'0px 0px -40px 0px'});
 document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+// safety: never leave sections empty if the observer never fires (odd browsers, print, full-page capture)
+setTimeout(()=>document.querySelectorAll('.rv:not(.in)').forEach(el=>el.classList.add('in')), 2500);
+
+// benchmark bars: count up + grow when the section is revealed
+const bench=document.getElementById('benchRows');
+if(bench){
+  const mb=v=>+v;
+  const rows=[...bench.querySelectorAll('.bar')];
+  const animate=()=>{
+    const post=mb(bench.dataset.postMb), disp=mb(bench.dataset.dispMb);
+    const bars=[...bench.querySelectorAll('.bar i')];
+    const nums=[...bench.querySelectorAll('.num')];
+    bars[0].style.width=(disp/post*100)+'%';
+    bars[1].style.width='100%';
+    const t0=performance.now(), D=1400;
+    const tick=n=>{
+      const p=Math.min(1,(n-t0)/D), e=1-Math.pow(1-p,3); // ease-out cubic
+      nums[0].textContent=Math.round(disp*e*10)/10;
+      nums[1].textContent=Math.round(post*e*10)/10;
+      if(p<1) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
+  new IntersectionObserver((es,o)=>{ if(es.some(e=>e.isIntersecting)){ animate(); o.disconnect(); } },{threshold:.3}).observe(bench);
+  setTimeout(animate, 4000); // same safety net: animate even if never scrolled to
+}
 
 // ---- download: detect OS + pick the exact asset from the latest GitHub release ----
 (function(){
