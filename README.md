@@ -76,11 +76,11 @@ Download from [Releases](https://github.com/Roqak/dispatch/releases/latest):
 
 | Platform | File | Notes |
 |---|---|---|
-| macOS Apple Silicon & Intel | `Dispatch_0.6.1_universal.dmg` | macOS 13.0+; unsigned builds need right-click → Open |
-| Windows | `Dispatch_0.5.0_x64-setup.exe` ([v0.5.0](https://github.com/Roqak/dispatch/releases/tag/v0.5.0)) | Windows 10/11 |
-| Debian/Ubuntu | `Dispatch_0.5.0_amd64.deb` ([v0.5.0](https://github.com/Roqak/dispatch/releases/tag/v0.5.0)) | needs `libwebkit2gtk-4.1-0` / `libgtk-3-0` (installed by most desktop setups) |
-| Fedora/RHEL | `Dispatch-0.5.0-1.x86_64.rpm` ([v0.5.0](https://github.com/Roqak/dispatch/releases/tag/v0.5.0)) | same |
-| Any Linux | `Dispatch_0.5.0_amd64.AppImage` ([v0.5.0](https://github.com/Roqak/dispatch/releases/tag/v0.5.0)) | self-contained; needs FUSE2 (or `--appimage-extract`) |
+| macOS Apple Silicon & Intel | `Dispatch_0.6.2_universal.dmg` | macOS 13.0+; unsigned builds need right-click → Open |
+| Windows | `Dispatch_0.6.2_x64-setup.exe` | Windows 10/11 |
+| Debian/Ubuntu | `Dispatch_0.6.2_amd64.deb` | needs `libwebkit2gtk-4.1-0` / `libgtk-3-0` (installed by most desktop setups) |
+| Fedora/RHEL | `Dispatch-0.6.2-1.x86_64.rpm` | same |
+| Any Linux | `Dispatch_0.6.2_amd64.AppImage` | self-contained; needs FUSE2 (or `--appimage-extract`) |
 
 ## Profiles
 
