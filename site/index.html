@@ -209,6 +209,23 @@ footer .legal b{color:var(--mut)}
   #download .footfacts{gap:14px}
 }
 </style>
+<script>
+// ---- analytics: PostHog, production host only, no cookies or session recording ----
+!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+if(location.hostname==='dispatch.ashlabs.xyz'){
+  posthog.init('phc_naaLH9TyAfgTcSnC7jwA5zRSVrvETYYndkhiGTVNAzkn',{
+    api_host:'https://us.i.posthog.com',
+    persistence:'memory',            // no cookies or localStorage, so no consent banner
+    person_profiles:'identified_only',
+    autocapture:false,
+    capture_pageview:true,
+    capture_pageleave:true,
+    disable_session_recording:true
+  });
+  posthog.register({app:'dispatch'});
+}
+function track(event,props){ try{ window.posthog&&posthog.capture(event,props); }catch(e){} }
+</script>
 </head>
 <body>
 
@@ -501,10 +518,28 @@ if(bench){
   copy.addEventListener('click',function(){
     var done=function(){ copy.textContent='Copied'; copy.classList.add('ok');
       setTimeout(function(){copy.textContent='Copy'; copy.classList.remove('ok')},1600) };
+    track('install_copy',{os:cur});
     if(navigator.clipboard) navigator.clipboard.writeText(CMDS[cur].cmd).then(done,function(){});
   });
   show(/Windows/i.test(navigator.userAgent||'')?'win':'unix');
 })();
+
+// ---- analytics: classify outbound clicks by destination ----
+document.addEventListener('click',function(e){
+  var a=e.target.closest&&e.target.closest('a[href]');
+  if(!a) return;
+  var href=a.href, sec=a.closest('section,nav');
+  var placement=sec?(sec.tagName==='NAV'?'nav':(sec.id||'page')):'page';
+  if(/\/releases\/download\//.test(href)){
+    var file=href.split('/').pop();
+    var os=/\.dmg$/i.test(file)?'mac':/\.exe$|\.msi$/i.test(file)?'windows':/\.(AppImage|deb|rpm)$/i.test(file)?'linux':'other';
+    track('download_click',{file:file,os:os,label:a.textContent.trim(),placement:placement});
+  } else if(/github\.com\/Roqak\/dispatch\/releases/.test(href)){
+    track('releases_click',{label:a.textContent.trim(),placement:placement});
+  } else if(/github\.com\/Roqak\/dispatch\/?$/.test(href)){
+    track('source_click',{label:a.textContent.trim(),placement:placement});
+  }
+});
 
 // ---- download: detect OS + pick the exact asset from the latest GitHub release ----
 (function(){
