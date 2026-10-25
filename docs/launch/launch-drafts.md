@@ -6,7 +6,7 @@ Ready-to-post launch copy. Replace [placeholder] after publishing; edit freely.
 
 ## Hacker News (Show HN)
 
-Title: `Show HN: Dispatch – a 2.6 MB open-source API client that syncs your Postman account`
+Title: `Show HN: Dispatch – a lightweight, native, open-source API client (works with Postman)`
 
 > Hi HN! I built Dispatch, a native API client (mac/Windows/Linux) that syncs with your existing Postman account through Postman's official API — so your team can keep working in Postman while you use something about 200x smaller.
 >

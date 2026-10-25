@@ -1,7 +1,7 @@
 [package]
 name = "dispatch"
 version = "0.6.2"
-description = "A lightweight API client that syncs with your Postman account"
+description = "A lightweight, native API client for REST, WebSocket, gRPC and GraphQL"
 edition = "2021"
 rust-version = "1.77"
 

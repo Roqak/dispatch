@@ -7,7 +7,7 @@
   <img src="docs/screenshots/runner.png" alt="Dispatch collection runner" width="49%">
 </p>
 
-A lightweight API client that works with your existing Postman account. It reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something much lighter — and it runs entirely on this device without a Postman account too.
+A lightweight, native API client for REST, WebSocket, gRPC and GraphQL. Use it on its own: a built-in local profile keeps everything on this device, with no account at all. Or connect your Postman account and Dispatch reads and writes your workspaces, collections, environments and globals through Postman's official API, so your team can keep using Postman while you use something much lighter.
 
 Native on **macOS 13+** (Apple Silicon and Intel), **Windows** (10/11) and **Linux** (glibc `x86_64`).
 
