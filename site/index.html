@@ -53,9 +53,10 @@ nav .links a:hover{color:var(--ink);background:#ffffff0d}
 #hero .glow{position:absolute;inset:-20% -10% auto;z-index:-2;pointer-events:none;background:
   radial-gradient(60% 45% at 78% 18%, #7fd6a41f, transparent 70%),
   radial-gradient(40% 30% at 15% 5%, #f5b9420f, transparent 70%)}
-.hero-in{padding:120px 0 40px;display:grid;grid-template-columns:1.08fr .92fr;gap:56px;align-items:center}
+.hero-in{padding:120px 0 40px;display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);gap:56px;align-items:start}
+.hero-side{display:grid;grid-template-columns:minmax(0,1fr);gap:22px;padding-top:56px}
 .hero-copy{min-width:0}
-@media (max-width:960px){.hero-in{grid-template-columns:1fr;gap:40px}.bench-card{max-width:560px}}
+@media (max-width:960px){.hero-in{grid-template-columns:1fr;gap:40px}.hero-side{max-width:560px;padding-top:0}}
 .hero-copy .eyebrow{margin-bottom:18px;animation:rise .7s .1s backwards}
 .bench-card{display:grid;gap:20px;border-radius:32px;padding:30px 30px 26px;background:
     radial-gradient(130% 150% at 12% 0%, #7fd6a41f, transparent 55%),
@@ -80,7 +81,7 @@ h1 .amber{color:var(--amber)}
 .dl-switch a:hover,.dl-switch button:hover{color:var(--ink);border-color:#7fd6a477}
 .dl-switch a.on,.dl-switch button.on{color:var(--acc);border-color:#7fd6a477;background:#7fd6a414}
 .dl-switch button[disabled]{opacity:.45}
-.oneliner{margin-top:18px;max-width:560px;animation:rise .7s .42s backwards}
+.oneliner{animation:rise .9s .55s backwards}
 .ol-tabs{display:flex;gap:4px;margin-bottom:8px;font-size:12.5px;font-weight:700}
 .ol-tabs button{padding:4px 12px;border-radius:999px;color:var(--mut);transition:color .2s,background .2s}
 .ol-tabs button:hover{color:var(--ink2)}
@@ -235,6 +236,26 @@ footer .legal b{color:var(--mut)}
         <a class="cta ghost" href="https://github.com/Roqak/dispatch">View the source</a>
       </div>
       <div class="dl-switch" id="dlSwitch" hidden></div>
+      <div class="hero-badge">
+        <span>macOS 13+ · Apple Silicon &amp; Intel</span>
+        <span>Windows 10/11</span>
+        <span>Linux x86_64</span>
+        <span>REST · WebSocket · gRPC · GraphQL</span>
+      </div>
+    </div>
+    <div class="hero-side">
+      <aside class="bench-card" id="benchRows" data-disp-mb="8.0" data-post-mb="206.9">
+        <span class="eb"><i></i>Benchmark · download size, macOS Apple Silicon</span>
+        <div class="brow hi">
+          <div class="bl">Dispatch <span class="vs">26× lighter</span><small><span class="num">0</span> MB</small></div>
+          <div class="bar disp"><i></i></div>
+        </div>
+        <div class="brow">
+          <div class="bl">Postman<small><span class="num">0</span> MB</small></div>
+          <div class="bar post"><i></i></div>
+        </div>
+        <p class="note">Measured 24 Oct 2026 — Dispatch v0.6.1 (8,021,760 bytes) vs Postman's macOS arm64 download (206,943,275 bytes, dl.pstmn.io). Platform sizes differ; the scale holds.</p>
+      </aside>
       <div class="oneliner" id="oneLiner">
         <div class="ol-tabs" role="tablist" aria-label="Install from the terminal">
           <button type="button" role="tab" data-os="unix" class="on" aria-selected="true">macOS / Linux</button>
@@ -245,25 +266,7 @@ footer .legal b{color:var(--mut)}
           <button type="button" id="olCopy">Copy</button>
         </div>
       </div>
-      <div class="hero-badge">
-        <span>macOS 13+ · Apple Silicon &amp; Intel</span>
-        <span>Windows 10/11</span>
-        <span>Linux x86_64</span>
-        <span>REST · WebSocket · gRPC · GraphQL</span>
-      </div>
     </div>
-    <aside class="bench-card" id="benchRows" data-disp-mb="8.0" data-post-mb="206.9">
-      <span class="eb"><i></i>Benchmark · download size, macOS Apple Silicon</span>
-      <div class="brow hi">
-        <div class="bl">Dispatch <span class="vs">26× lighter</span><small><span class="num">0</span> MB</small></div>
-        <div class="bar disp"><i></i></div>
-      </div>
-      <div class="brow">
-        <div class="bl">Postman<small><span class="num">0</span> MB</small></div>
-        <div class="bar post"><i></i></div>
-      </div>
-      <p class="note">Measured 24 Oct 2026 — Dispatch v0.6.1 (8,021,760 bytes) vs Postman's macOS arm64 download (206,943,275 bytes, dl.pstmn.io). Platform sizes differ; the scale holds.</p>
-    </aside>
   </div>
   <div class="wrap hero-shot">
     <div class="frame"><img src="img/light.png" alt="Dispatch request editor with a response and the collection runner"></div>
